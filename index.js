@@ -2,95 +2,159 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const axios = require('axios');
 
-// Inicializa o app do Slack
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
-// Função para detectar o idioma usando a API da DeepL
+// Validador de texto
+function isValidText(text) {
+  return typeof text === 'string' && text.trim().length > 0;
+}
+
 async function detectLanguage(text) {
-  const response = await axios.post(
-    'https://api-free.deepl.com/v2/translate',
-    null,
-    {
-      params: {
-        auth_key: process.env.DEEPL_API_KEY,
-        text: text,
-        target_lang: 'EN', // Usamos EN como padrão para detecção
-      },
-    }
-  );
-  return response.data.translations[0].detected_source_language;
+  try {
+    const response = await axios.post(
+      'https://api-free.deepl.com/v2/translate',
+      null,
+      {
+        params: {
+          auth_key: process.env.DEEPL_API_KEY,
+          text: text,
+          target_lang: 'EN',
+        },
+        timeout: 5000
+      }
+    );
+    return response.data.translations[0].detected_source_language;
+  } catch (error) {
+    console.error('Erro na detecção de idioma:', {
+      status: error.response?.status,
+      data: error.response?.data,
+      texto: text.substring(0, 50)
+    });
+    throw error;
+  }
 }
 
-// Função para traduzir texto usando a API da DeepL
 async function translateText(text, targetLang) {
-  const response = await axios.post(
-    'https://api-free.deepl.com/v2/translate',
-    null,
-    {
-      params: {
-        auth_key: process.env.DEEPL_API_KEY,
-        text: text,
-        target_lang: targetLang,
-      },
-    }
-  );
-  return response.data.translations[0].text;
+  try {
+    const response = await axios.post(
+      'https://api-free.deepl.com/v2/translate',
+      null,
+      {
+        params: {
+          auth_key: process.env.DEEPL_API_KEY,
+          text: text,
+          target_lang: targetLang,
+        },
+        timeout: 5000
+      }
+    );
+    return response.data.translations[0].text;
+  } catch (error) {
+    console.error('Erro na tradução:', {
+      idiomaAlvo: targetLang,
+      status: error.response?.status,
+      data: error.response?.data,
+      texto: text.substring(0, 50)
+    });
+    throw error;
+  }
 }
 
-// Escuta mensagens no canal (ignora threads)
 app.message(async ({ message, say }) => {
   try {
-    // Ignora mensagens que já estão em threads
-    if (message.thread_ts) {
-      console.log('Mensagem ignorada: é um comentário em uma thread.');
+    // Verificação em 4 etapas
+    if (
+      message.thread_ts ||
+      !isValidText(message.text)
+    ) {
+      console.log('Mensagem ignorada:', {
+        ts: message.ts,
+        motivo: message.thread_ts ? 'thread' : 'texto inválido',
+        tipo: message.subtype || 'mensagem regular',
+        texto: message.text ? `${message.text.substring(0, 20)}...` : 'nulo'
+      });
       return;
     }
 
-    const text = message.text;
+    const cleanText = message.text.trim();
+    console.log('Processando mensagem:', {
+      ts: message.ts,
+      user: message.user,
+      texto: cleanText.substring(0, 50) + '...'
+    });
 
-    // Detecta o idioma da mensagem
-    const sourceLang = await detectLanguage(text);
-    console.log(`Idioma detectado: ${sourceLang}`);
+    const sourceLang = await detectLanguage(cleanText);
+    console.log('Idioma detectado:', sourceLang);
 
-    // Define os idiomas alvo com base no idioma original
     const targetLanguages = {
       PT: ['EN', 'ES'],
       EN: ['PT', 'ES'],
       ES: ['PT', 'EN'],
+      default: []
     };
 
-    if (!targetLanguages[sourceLang]) {
-      console.log(`Idioma não suportado: ${sourceLang}`);
+    const languages = targetLanguages[sourceLang] || targetLanguages.default;
+    
+    if (languages.length === 0) {
+      console.log('Idioma não suportado:', sourceLang);
+      await say({
+        thread_ts: message.ts,
+        text: `Idioma ${sourceLang} não é suportado para tradução.`
+      });
       return;
     }
 
-    // Traduz para os outros idiomas
     const translations = await Promise.all(
-      targetLanguages[sourceLang].map(async (lang) => {
-        const translatedText = await translateText(text, lang);
-        return `${lang}: ${translatedText}`;
+      languages.map(async (lang) => {
+        const translated = await translateText(cleanText, lang);
+        return `:${lang.toLowerCase()}: ${translated}`;
       })
     );
 
-    console.log('Traduções geradas:', translations);
-
-    // Envia as traduções como uma resposta na thread
     await say({
-      thread_ts: message.ts, // Inicia uma thread com a mensagem original
-      text: translations.join('\n'), // Remove o prefixo "Traduções:"
+      thread_ts: message.ts,
+      text: translations.join('\n\n'),
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: '*Traduções:*\n' + translations.join('\n')
+          }
+        }
+      ]
     });
 
-    console.log('Resposta enviada com sucesso.');
+    console.log('Tradução concluída:', {
+      ts: message.ts,
+      idiomaOrigem: sourceLang,
+      idiomasDestino: languages
+    });
+
   } catch (error) {
-    console.error('Erro ao processar mensagem:', error);
+    console.error('Erro crítico:', {
+      ts: message.ts,
+      erro: error.message,
+      stack: error.stack?.split('\n')[0],
+      respostaAPI: error.response?.data
+    });
+    
+    await say({
+      thread_ts: message.ts,
+      text: `:warning: Erro ao processar tradução. Detalhes: ${error.message.substring(0, 100)}...`
+    });
   }
 });
 
-// Inicia o bot
 (async () => {
-  await app.start(process.env.PORT || 3000);
-  console.log('Bot está online!');
+  try {
+    await app.start(process.env.PORT || 3000);
+    console.log('Bot online - Versão 2.1');
+  } catch (error) {
+    console.error('Falha na inicialização:', error);
+    process.exit(1);
+  }
 })();
