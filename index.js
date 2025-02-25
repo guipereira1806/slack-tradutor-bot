@@ -34,7 +34,15 @@ async function detectLanguage(text) {
       timeout: 3000
     }
   );
-  return response.data.translations[0].detected_source_language;
+
+  let detectedLang = response.data.translations[0].detected_source_language;
+  
+  // Garante que qualquer variante do português seja tratada como PT-BR
+  if (detectedLang.startsWith('PT')) {
+    detectedLang = 'PT';
+  }
+
+  return detectedLang;
 }
 
 async function translateText(text, targetLang) {
