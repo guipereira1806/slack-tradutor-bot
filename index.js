@@ -6,7 +6,7 @@ const axios = require('axios');
 // CONSTANTES E CONFIGURAÇÕES
 // =================================================================
 
-const DEEPL_API_URL = 'https://api-free.deepl.com/v2/translate';
+const DEEPL_API_URL = 'https://api.deepl.com/v2/translate';
 const MIN_MESSAGE_LENGTH = 5;
 
 // Mapeamento de idiomas com emoji e nome
@@ -122,13 +122,10 @@ function formatSlackBlocks(translations, sourceLang) {
 }
 
 // =================================================================
-// NOVO LISTENER DE MENSAGENS DO SLACK
+// LISTENER DE MENSAGENS DO SLACK (FINAL E CORRIGIDO)
 // =================================================================
 
-app.message(async ({ message, ack, say }) => {
-  // Acknowledge the event as soon as it's received to prevent retries
-  await ack();
-
+app.message(async ({ message, say }) => {
   try {
     if (message.thread_ts || !message.text) {
       return;
