@@ -179,6 +179,6 @@ app.message(async ({ message, say }) => {
 });
 
 (async () => {
-  await app.start(process.env.PORT || 3000);
+  await app.start(process.env.PORT || 3000, '0.0.0.0');
   console.log('🚀 Tradutor do Slack está online!');
 })();
