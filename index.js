@@ -9,20 +9,23 @@ const axios = require('axios');
 const DEEPL_API_URL = 'https://api-free.deepl.com/v2/translate';
 const MIN_MESSAGE_LENGTH = 5;
 
+// Mapeamento de idiomas com emoji e nome
 const LANGUAGE_MAP = {
   EN: { emoji: '🇺🇸', name: 'Inglês' },
   ES: { emoji: '🇪🇸', name: 'Espanhol' },
   'PT-BR': { emoji: '🇧🇷', name: 'Português (Brasil)' },
 };
 
+// Configuração de tradução: define para quais idiomas traduzir
 const translationConfig = {
   'PT-BR': ['EN', 'ES'],
   EN: ['PT-BR', 'ES'],
   ES: ['PT-BR', 'EN'],
 };
 
+// Cache simples para evitar chamadas de API duplicadas para a mesma mensagem
 const translationCache = new Map();
-const TTL_CACHE_MS = 15 * 60 * 1000;
+const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
 
 // =================================================================
 // INICIALIZAÇÃO DO APLICATIVO SLACK
@@ -58,6 +61,13 @@ const handleDeeplError = (error) => {
 };
 
 async function detectLanguage(text) {
+  // --- Bloco de depuração para ver a requisição ---
+  console.log('--- Depurando Requisição DeepL ---');
+  console.log('Texto enviado:', text);
+  console.log('Chave API:', process.env.DEEPL_API_KEY ? 'Encontrada ✅' : 'Não encontrada ❌');
+  console.log('-----------------------------------');
+  // --- Fim do bloco de depuração ---
+
   const response = await axios.post(
     DEEPL_API_URL,
     {
