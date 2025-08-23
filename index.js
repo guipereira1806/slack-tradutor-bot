@@ -40,12 +40,6 @@ const app = new App({
 // FUNÇÕES AUXILIARES
 // =================================================================
 
-const isValidMessage = (message) => {
-  return !message.thread_ts &&
-         message.text &&
-         message.text.trim().length > MIN_MESSAGE_LENGTH;
-};
-
 const handleDeeplError = (error) => {
   if (axios.isAxiosError(error) && error.response) {
     const status = error.response.status;
@@ -61,16 +55,6 @@ const handleDeeplError = (error) => {
 };
 
 async function detectLanguage(text) {
-  // --- Bloco de depuração para ver a requisição ---
-  console.log('--- Depurando Requisição DeepL ---');
-  console.log('Dados enviados:', {
-    auth_key: process.env.DEEPL_API_KEY ? 'Chave encontrada' : 'Chave não encontrada',
-    text: text,
-    target_lang: 'EN',
-  });
-  console.log('-----------------------------------');
-  // --- Fim do bloco de depuração ---
-
   const response = await axios.post(
     DEEPL_API_URL,
     {
@@ -138,10 +122,13 @@ function formatSlackBlocks(translations, sourceLang) {
 }
 
 // =================================================================
-// LISTENER DE MENSAGENS DO SLACK
+// NOVO LISTENER DE MENSAGENS DO SLACK
 // =================================================================
 
-app.message(async ({ message, say }) => {
+app.message(async ({ message, ack, say }) => {
+  // Acknowledge the event as soon as it's received to prevent retries
+  await ack();
+
   try {
     if (message.thread_ts || !message.text) {
       return;
@@ -193,6 +180,10 @@ app.message(async ({ message, say }) => {
     });
   }
 });
+
+// =================================================================
+// INICIALIZAÇÃO DO SERVIDOR
+// =================================================================
 
 (async () => {
   await app.start({ port: process.env.PORT || 3000, host: '0.0.0.0' });
