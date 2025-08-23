@@ -7,25 +7,21 @@ const axios = require('axios');
 // =================================================================
 
 const DEEPL_API_URL = 'https://api-free.deepl.com/v2/translate';
-const MIN_MESSAGE_LENGTH = 5;
 
-// Mapeamento de idiomas com emoji e nome
 const LANGUAGE_MAP = {
   EN: { emoji: '🇺🇸', name: 'Inglês' },
   ES: { emoji: '🇪🇸', name: 'Espanhol' },
   'PT-BR': { emoji: '🇧🇷', name: 'Português (Brasil)' },
 };
 
-// Configuração de tradução: define para quais idiomas traduzir
 const translationConfig = {
   'PT-BR': ['EN', 'ES'],
   EN: ['PT-BR', 'ES'],
   ES: ['PT-BR', 'EN'],
 };
 
-// Cache simples para evitar chamadas de API duplicadas para a mesma mensagem
 const translationCache = new Map();
-const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
+const TTL_CACHE_MS = 15 * 60 * 1000;
 
 // =================================================================
 // INICIALIZAÇÃO DO APLICATIVO SLACK
@@ -39,12 +35,6 @@ const app = new App({
 // =================================================================
 // FUNÇÕES AUXILIARES
 // =================================================================
-
-const isValidMessage = (message) => {
-  return !message.thread_ts &&
-         message.text &&
-         message.text.trim().length > MIN_MESSAGE_LENGTH;
-};
 
 const handleDeeplError = (error) => {
   if (axios.isAxiosError(error) && error.response) {
@@ -63,11 +53,7 @@ const handleDeeplError = (error) => {
 async function detectLanguage(text) {
   const response = await axios.post(
     DEEPL_API_URL,
-    {
-      auth_key: process.env.DEEPL_API_KEY,
-      text: text,
-      target_lang: 'EN',
-    },
+    { auth_key: process.env.DEEPL_API_KEY, text, target_lang: 'EN' },
     { timeout: 3000 }
   );
   const detectedLang = response.data.translations[0].detected_source_language;
@@ -77,17 +63,12 @@ async function detectLanguage(text) {
 async function translateText(text, targetLang) {
   const cacheKey = `${text}-${targetLang}`;
   const cachedResult = translationCache.get(cacheKey);
-
   if (cachedResult && Date.now() - cachedResult.timestamp < TTL_CACHE_MS) {
     return cachedResult.translation;
   }
   const response = await axios.post(
     DEEPL_API_URL,
-    {
-      auth_key: process.env.DEEPL_API_KEY,
-      text: text,
-      target_lang: targetLang,
-    },
+    { auth_key: process.env.DEEPL_API_KEY, text, target_lang: targetLang },
     { timeout: 3000 }
   );
   const translatedText = response.data.translations[0].text;
@@ -97,33 +78,10 @@ async function translateText(text, targetLang) {
 
 function formatSlackBlocks(translations, sourceLang) {
   return [
-    {
-      type: 'header',
-      text: {
-        type: 'plain_text',
-        text: '🌍 Traduções Automáticas',
-        emoji: true,
-      },
-    },
-    {
-      type: 'divider',
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: translations.join('\n\n'),
-      },
-    },
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `🔠 Idioma original detectado: ${LANGUAGE_MAP[sourceLang]?.emoji || ''} ${LANGUAGE_MAP[sourceLang]?.name || sourceLang}`,
-        },
-      ],
-    },
+    { type: 'header', text: { type: 'plain_text', text: '🌍 Traduções Automáticas', emoji: true } },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: translations.join('\n\n') } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `🔠 Idioma original detectado: ${LANGUAGE_MAP[sourceLang]?.emoji || ''} ${LANGUAGE_MAP[sourceLang]?.name || sourceLang}` }] },
   ];
 }
 
@@ -133,34 +91,31 @@ function formatSlackBlocks(translations, sourceLang) {
 
 app.message(async ({ message, say }) => {
   try {
-    if (!isValidMessage(message)) {
+    // Ignora mensagens em threads ou sem texto
+    if (message.thread_ts || !message.text) {
       return;
     }
-    // Esta linha de código remove as menções de usuário e canais do texto
+
+    // Remove menções de usuários (como o @bot) e de canais do texto
     const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
-    
-    // Verifique se o texto limpo ainda é válido
-    if (cleanText.length <= 5) {
+
+    // Se o texto restante estiver vazio, ignora a mensagem
+    if (cleanText.length === 0) {
       return;
     }
+
     let sourceLang;
     try {
       sourceLang = await detectLanguage(cleanText);
     } catch (error) {
-      await say({
-        thread_ts: message.ts,
-        text: `⚠️ Erro ao detectar o idioma: ${handleDeeplError(error)}`,
-      });
-      return;
+      return await say({ thread_ts: message.ts, text: `⚠️ Erro ao detectar o idioma: ${handleDeeplError(error)}` });
     }
+
     const targetLangs = translationConfig[sourceLang] || [];
     if (targetLangs.length === 0) {
-      await say({
-        thread_ts: message.ts,
-        text: `${LANGUAGE_MAP[sourceLang]?.emoji || '⚠️'} Idioma não suportado para tradução automática.`,
-      });
-      return;
+      return await say({ thread_ts: message.ts, text: `${LANGUAGE_MAP[sourceLang]?.emoji || '⚠️'} Idioma não suportado para tradução automática.` });
     }
+
     const translations = await Promise.all(
       targetLangs.map(async (lang) => {
         try {
@@ -174,18 +129,20 @@ app.message(async ({ message, say }) => {
         }
       })
     );
+
     await say({
       thread_ts: message.ts,
       blocks: formatSlackBlocks(translations, sourceLang),
     });
   } catch (error) {
     console.error('Erro inesperado no processamento da mensagem:', error);
-    await say({
-      thread_ts: message.ts,
-      text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0, 50)}...`,
-    });
+    await say({ thread_ts: message.ts, text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0, 50)}...` });
   }
 });
+
+// =================================================================
+// INICIALIZAÇÃO DO SERVIDOR
+// =================================================================
 
 (async () => {
   await app.start({ port: process.env.PORT || 3000, host: '0.0.0.0' });
