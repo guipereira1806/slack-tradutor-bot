@@ -176,4 +176,16 @@ app.message(async ({ message, say }) => {
     console.error('Erro inesperado no processamento da mensagem:', error);
     await say({
       thread_ts: message.ts,
-      text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0,
+      text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0, 50)}...`,
+    });
+  }
+});
+
+// =================================================================
+// INICIALIZAÇÃO DO SERVIDOR
+// =================================================================
+
+(async () => {
+  await app.start({ port: process.env.PORT || 3000, host: '0.0.0.0' });
+  console.log('🚀 Tradutor do Slack está online!');
+})();
