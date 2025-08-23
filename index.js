@@ -61,13 +61,6 @@ const handleDeeplError = (error) => {
 };
 
 async function detectLanguage(text) {
-  // --- Bloco de depuração para ver a requisição ---
-  console.log('--- Depurando Requisição DeepL ---');
-  console.log('Texto enviado:', text);
-  console.log('Chave API:', process.env.DEEPL_API_KEY ? 'Encontrada ✅' : 'Não encontrada ❌');
-  console.log('-----------------------------------');
-  // --- Fim do bloco de depuração ---
-
   const response = await axios.post(
     DEEPL_API_URL,
     {
@@ -143,7 +136,13 @@ app.message(async ({ message, say }) => {
     if (!isValidMessage(message)) {
       return;
     }
-    const cleanText = message.text.trim();
+    // Esta linha de código remove as menções de usuário e canais do texto
+    const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
+    
+    // Verifique se o texto limpo ainda é válido
+    if (cleanText.length <= 5) {
+      return;
+    }
     let sourceLang;
     try {
       sourceLang = await detectLanguage(cleanText);
