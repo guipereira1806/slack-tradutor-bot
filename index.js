@@ -6,7 +6,8 @@ const axios = require('axios');
 // CONSTANTES E CONFIGURAÇÕES
 // =================================================================
 
-const DEEPL_API_URL = 'https://api.deepl.com/v2/translate';
+// Esta URL é para o plano Gratuito
+const DEEPL_API_URL = 'https://api-free.deepl.com/v2/translate';
 const MIN_MESSAGE_LENGTH = 5;
 
 // Mapeamento de idiomas com emoji e nome
