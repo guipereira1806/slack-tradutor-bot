@@ -6,7 +6,6 @@ const axios = require('axios');
 // CONSTANTES E CONFIGURAÇÕES
 // =================================================================
 
-// Esta URL é para o plano Gratuito
 const DEEPL_API_URL = 'https://api-free.deepl.com/v2/translate';
 const MIN_MESSAGE_LENGTH = 5;
 
@@ -123,11 +122,14 @@ function formatSlackBlocks(translations, sourceLang) {
 }
 
 // =================================================================
-// LISTENER DE MENSAGENS DO SLACK (FINAL E CORRIGIDO)
+// LISTENER DE MENSAGENS DO SLACK
 // =================================================================
 
 app.message(async ({ message, say }) => {
   try {
+    // --- LINHA DE DIAGNÓSTICO FINAL ---
+    console.log('Mensagem recebida do Slack:', message);
+    // ----------------------------------
     if (message.thread_ts || !message.text) {
       return;
     }
@@ -174,16 +176,4 @@ app.message(async ({ message, say }) => {
     console.error('Erro inesperado no processamento da mensagem:', error);
     await say({
       thread_ts: message.ts,
-      text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0, 50)}...`,
-    });
-  }
-});
-
-// =================================================================
-// INICIALIZAÇÃO DO SERVIDOR
-// =================================================================
-
-(async () => {
-  await app.start({ port: process.env.PORT || 3000, host: '0.0.0.0' });
-  console.log('🚀 Tradutor do Slack está online!');
-})();
+      text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0,
