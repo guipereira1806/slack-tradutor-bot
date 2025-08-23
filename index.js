@@ -2,6 +2,13 @@ require('dotenv').config();
 const { App } = require('@slack/bolt');
 const axios = require('axios');
 
+// Adicione este bloco no topo do seu arquivo para depuração
+console.log('--- Verificando Variáveis de Ambiente ---');
+console.log('SLACK_SIGNING_SECRET:', process.env.SLACK_SIGNING_SECRET ? 'Encontrada ✅' : 'Não encontrada ❌');
+console.log('SLACK_BOT_TOKEN:', process.env.SLACK_BOT_TOKEN ? 'Encontrada ✅' : 'Não encontrada ❌');
+console.log('DEEPL_API_KEY:', process.env.DEEPL_API_KEY ? 'Encontrada ✅' : 'Não encontrada ❌');
+console.log('-----------------------------------------');
+
 // =================================================================
 // CONSTANTES E CONFIGURAÇÕES
 // =================================================================
@@ -185,7 +192,6 @@ app.message(async ({ message, say }) => {
       return;
     }
     
-    // Pega os idiomas de destino com base no idioma de origem
     const targetLangs = translationConfig[sourceLang] || [];
 
     if (targetLangs.length === 0) {
@@ -196,12 +202,10 @@ app.message(async ({ message, say }) => {
       return;
     }
 
-    // Processa as traduções em paralelo para melhor performance
     const translations = await Promise.all(
       targetLangs.map(async (lang) => {
         try {
           const translated = await translateText(cleanText, lang);
-          // Usa o nome e emoji do mapa para formatar a resposta
           const langInfo = LANGUAGE_MAP[lang] || { emoji: '❓', name: lang };
           return `${langInfo.emoji} *${langInfo.name}*:\n${translated}`;
         } catch (error) {
@@ -212,7 +216,6 @@ app.message(async ({ message, say }) => {
       })
     );
 
-    // Envia a mensagem formatada para o Slack
     await say({
       thread_ts: message.ts,
       blocks: formatSlackBlocks(translations, sourceLang),
