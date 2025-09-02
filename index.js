@@ -44,7 +44,9 @@ const handleDeeplError = (error) => {
   if (axios.isAxiosError(error) && error.response) {
     const status = error.response.status;
     switch (status) {
-      case 401: return 'Chave de API do DeepL inválida ou ausente.';
+      case 400: return 'Requisição inválida para a API do DeepL (Bad Request). Verifique os parâmetros.';
+      case 401:
+      case 403: return 'Chave de API do DeepL inválida ou sem permissão.';
       case 429: return 'Limite de requisições excedido. Tente novamente mais tarde.';
       case 456: return 'Cota mensal de tradução excedida.';
       case 503: return 'Serviço DeepL indisponível. Tente novamente mais tarde.';
@@ -53,20 +55,6 @@ const handleDeeplError = (error) => {
   }
   return `Erro de rede ou desconhecido: ${error.message}`;
 };
-
-async function detectLanguage(text) {
-  const response = await axios.post(
-    DEEPL_API_URL,
-    {
-      auth_key: process.env.DEEPL_API_KEY,
-      text: text,
-      target_lang: 'EN',
-    },
-    { timeout: 3000 }
-  );
-  const detectedLang = response.data.translations[0].detected_source_language;
-  return detectedLang.startsWith('PT') ? 'PT-BR' : detectedLang;
-}
 
 async function translateText(text, targetLang) {
   const cacheKey = `${text}-${targetLang}`;
@@ -79,10 +67,10 @@ async function translateText(text, targetLang) {
     DEEPL_API_URL,
     {
       auth_key: process.env.DEEPL_API_KEY,
-      text: text,
+      text: [text], // CORREÇÃO: O texto deve ser enviado como um array
       target_lang: targetLang,
     },
-    { timeout: 3000 }
+    { timeout: 5000 } // Aumentei um pouco o timeout para mais robustez
   );
   const translatedText = response.data.translations[0].text;
   translationCache.set(cacheKey, { translation: translatedText, timestamp: Date.now() });
@@ -122,61 +110,90 @@ function formatSlackBlocks(translations, sourceLang) {
 }
 
 // =================================================================
-// LISTENER DE MENSAGENS DO SLACK
+// LISTENER DE MENSAGENS DO SLACK (LÓGICA OTIMIZADA)
 // =================================================================
 
 app.message(async ({ message, say }) => {
   try {
-    // --- LINHA DE DIAGNÓSTICO FINAL ---
-    console.log('Mensagem recebida do Slack:', message);
-    // ----------------------------------
-    if (message.thread_ts || !message.text) {
-      return;
-    }
+    // --- Validações iniciais ---
+    if (message.thread_ts || !message.text) return;
     const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
-    if (cleanText.length === 0) {
-      return;
-    }
-    let sourceLang;
+    if (cleanText.length < MIN_MESSAGE_LENGTH) return; // MELHORIA: Valida o tamanho mínimo
+
+    // --- Passo 1: Otimização - Realiza a primeira tradução para detectar o idioma ---
+    // Em vez de uma chamada só para detectar, já fazemos a primeira tradução e aproveitamos o resultado.
+    const allPossibleSourceLangs = Object.keys(translationConfig);
+    if (allPossibleSourceLangs.length === 0) return;
+
+    // Pega o primeiro idioma alvo da configuração para usar como teste
+    const firstTargetLang = translationConfig[allPossibleSourceLangs[0]][0];
+    let firstTranslationResult;
+
     try {
-      sourceLang = await detectLanguage(cleanText);
+      const response = await axios.post(
+        DEEPL_API_URL,
+        {
+          auth_key: process.env.DEEPL_API_KEY,
+          text: [cleanText], // CORREÇÃO: Envia o texto em um array
+          target_lang: firstTargetLang,
+        },
+        { timeout: 5000 }
+      );
+      firstTranslationResult = response.data.translations[0];
     } catch (error) {
       await say({
         thread_ts: message.ts,
-        text: `⚠️ Erro ao detectar o idioma: ${handleDeeplError(error)}`,
+        text: `⚠️ Erro ao contatar a API de tradução: ${handleDeeplError(error)}`,
       });
       return;
     }
-    const targetLangs = translationConfig[sourceLang] || [];
-    if (targetLangs.length === 0) {
-      await say({
-        thread_ts: message.ts,
-        text: `${LANGUAGE_MAP[sourceLang]?.emoji || '⚠️'} Idioma não suportado para tradução automática.`,
-      });
-      return;
+
+    // --- Passo 2: Extrai o idioma de origem e formata a primeira tradução ---
+    const detectedLang = firstTranslationResult.detected_source_language;
+    const sourceLang = detectedLang.startsWith('PT') ? 'PT-BR' : detectedLang;
+    
+    // Verifica se o idioma detectado está configurado para tradução
+    const targetLangs = translationConfig[sourceLang];
+    if (!targetLangs || targetLangs.length === 0) {
+        // Opcional: pode enviar uma mensagem se o idioma não for suportado
+        return;
     }
-    const translations = await Promise.all(
-      targetLangs.map(async (lang) => {
+    
+    const langInfoFirst = LANGUAGE_MAP[firstTargetLang] || { emoji: '❓', name: firstTargetLang };
+    const firstFormattedTranslation = `${langInfoFirst.emoji} *${langInfoFirst.name}*:\n${firstTranslationResult.text}`;
+
+    // --- Passo 3: Realiza as traduções restantes em paralelo ---
+    const remainingTargetLangs = targetLangs.filter(lang => lang !== firstTargetLang);
+
+    const remainingTranslations = await Promise.all(
+      remainingTargetLangs.map(async (lang) => {
         try {
+          // Reutiliza a função translateText que já tem o sistema de cache
           const translated = await translateText(cleanText, lang);
           const langInfo = LANGUAGE_MAP[lang] || { emoji: '❓', name: lang };
           return `${langInfo.emoji} *${langInfo.name}*:\n${translated}`;
         } catch (error) {
           console.error(`Erro na tradução para ${lang}:`, error);
           const langInfo = LANGUAGE_MAP[lang] || { emoji: '❓', name: lang };
-          return `${langInfo.emoji} *${langInfo.name}*:\n_Erro ao traduzir._`;
+          return `${langInfo.emoji} *${langInfo.name}*:\n_${handleDeeplError(error)}_`;
         }
       })
     );
+    
+    const allTranslations = [firstFormattedTranslation, ...remainingTranslations];
+
+    // --- Passo 4: Envia a resposta formatada para o Slack ---
     await say({
       thread_ts: message.ts,
-      blocks: formatSlackBlocks(translations, sourceLang),
+      blocks: formatSlackBlocks(allTranslations, sourceLang),
+      text: `Traduções para: ${cleanText.substring(0, 50)}...` // Texto de fallback para notificações
     });
+
   } catch (error) {
     console.error('Erro inesperado no processamento da mensagem:', error);
     await say({
       thread_ts: message.ts,
-      text: `⚠️ Ocorreu um erro inesperado: ${error.message.substring(0, 50)}...`,
+      text: `⚠️ Ocorreu um erro inesperado: ${error.message}`,
     });
   }
 });
@@ -186,6 +203,7 @@ app.message(async ({ message, say }) => {
 // =================================================================
 
 (async () => {
-  await app.start({ port: process.env.PORT || 3000, host: '0.0.0.0' });
-  console.log('🚀 Tradutor do Slack está online!');
+  const port = process.env.PORT || 3000;
+  await app.start({ port, host: '0.0.0.0' });
+  console.log(`🚀 Tradutor do Slack está online na porta ${port}!`);
 })();
