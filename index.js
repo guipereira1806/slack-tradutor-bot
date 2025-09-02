@@ -62,37 +62,48 @@ const handleDeeplError = (error) => {
 };
 
 /**
- * NOVA FUNÇÃO: Centraliza a chamada à API DeepL, protegendo emojis da tradução.
+ * VERSÃO 2: Centraliza a chamada à API DeepL, protegendo emojis com placeholders.
  */
 async function callDeeplAPI(text, targetLang) {
-  // Regex para encontrar a maioria dos emojis Unicode
   const emojiRegex = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu;
+  const foundEmojis = text.match(emojiRegex);
 
-  // Envelopa os emojis com a tag <notranslate> para que o DeepL os ignore
-  const textWithProtectedEmojis = text.replace(emojiRegex, '<notranslate>$&</notranslate>');
-
-  const response = await axios.post(
-    DEEPL_API_URL,
-    {
+  // Se não houver emojis, faz uma chamada simples e direta.
+  if (!foundEmojis || foundEmojis.length === 0) {
+    const response = await axios.post(DEEPL_API_URL, {
       auth_key: process.env.DEEPL_API_KEY,
-      text: [textWithProtectedEmojis],
+      text: [text],
       target_lang: targetLang,
-      tag_handling: 'xml', // Habilita o manuseio de tags XML
-    },
-    { timeout: 5000 }
-  );
+    }, { timeout: 5000 });
+    const result = response.data.translations[0];
+    return { translatedText: result.text, detectedSourceLanguage: result.detected_source_language };
+  }
 
-  const translationResult = response.data.translations[0];
+  // Se houver emojis, usa a estratégia de placeholders.
+  let i = 0;
+  const textWithPlaceholders = text.replace(emojiRegex, () => `__EMOJI_${i++}__`);
 
-  // Remove as tags <notranslate> do texto final antes de retornar
-  const cleanedText = translationResult.text.replace(/<\/?notranslate>/g, '');
+  const response = await axios.post(DEEPL_API_URL, {
+    auth_key: process.env.DEEPL_API_KEY,
+    text: [textWithPlaceholders],
+    target_lang: targetLang,
+  }, { timeout: 5000 });
+
+  const result = response.data.translations[0];
+  let translatedTextWithPlaceholders = result.text;
+
+  // Reinsere os emojis no texto traduzido.
+  foundEmojis.forEach((emoji, index) => {
+    // Usa uma expressão regular para garantir a substituição correta
+    const placeholderRegex = new RegExp(`__EMOJI_${index}__`, 'g');
+    translatedTextWithPlaceholders = translatedTextWithPlaceholders.replace(placeholderRegex, emoji);
+  });
 
   return {
-    translatedText: cleanedText,
-    detectedSourceLanguage: translationResult.detected_source_language,
+    translatedText: translatedTextWithPlaceholders,
+    detectedSourceLanguage: result.detected_source_language,
   };
 }
-
 
 async function translateText(text, targetLang) {
   const cacheKey = `${text}-${targetLang}`;
@@ -102,7 +113,6 @@ async function translateText(text, targetLang) {
     return cachedResult.translation;
   }
   
-  // Usa a nova função centralizada para fazer a chamada
   const { translatedText } = await callDeeplAPI(text, targetLang);
 
   translationCache.set(cacheKey, { translation: translatedText, timestamp: Date.now() });
@@ -143,7 +153,6 @@ app.message(async ({ message, say }) => {
 
     let initialApiResult;
     try {
-      // Usa a nova função centralizada para a chamada inicial também
       initialApiResult = await callDeeplAPI(cleanText, 'EN');
     } catch (error) {
       await say({
