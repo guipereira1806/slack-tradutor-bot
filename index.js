@@ -1,5 +1,4 @@
 require('dotenv').config();
-// Passo 1: Importe o ExpressReceiver junto com o App
 const { App, ExpressReceiver } = require('@slack/bolt');
 const axios = require('axios');
 
@@ -32,7 +31,7 @@ const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
 // INICIALIZAÇÃO DO APLICATIVO SLACK
 // =================================================================
 
-// Passo 2: Crie e configure o receiver ANTES de inicializar o app
+// Cria um receiver customizado para adicionar a rota de health check
 const receiver = new ExpressReceiver({ signingSecret: process.env.SLACK_SIGNING_SECRET });
 
 // Adiciona a rota de health check diretamente no receiver
@@ -40,12 +39,11 @@ receiver.app.get('/', (req, res) => {
   res.status(200).send('Health check OK. Bot is running!');
 });
 
-// Passo 3: Inicialize o App, passando o receiver já configurado
+// Inicializa o App, passando o receiver já configurado
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  receiver: receiver, // A chave de assinatura já está no receiver
+  receiver: receiver,
 });
-
 
 // =================================================================
 // FUNÇÕES AUXILIARES
@@ -87,37 +85,47 @@ async function translateText(text, targetLang) {
   return translatedText;
 }
 
+// ESTA É A VERSÃO CORRIGIDA PARA MENSAGENS LONGAS
 function formatSlackBlocks(translations, sourceLang) {
-  return [
-    {
-      type: 'header',
-      text: {
-        type: 'plain_text',
-        text: '🌍 Traduções Automáticas',
-        emoji: true,
-      },
+  const headerBlock = {
+    type: 'header',
+    text: {
+      type: 'plain_text',
+      text: '🌍 Traduções Automáticas',
+      emoji: true,
     },
-    {
-      type: 'divider',
+  };
+
+  const dividerBlock = { type: 'divider' };
+
+  // Cria dinamicamente um bloco de 'section' para CADA tradução
+  const translationBlocks = translations.map(translationText => ({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: translationText,
     },
-    {
-      type: 'section',
-      text: {
+  }));
+
+  const contextBlock = {
+    type: 'context',
+    elements: [
+      {
         type: 'mrkdwn',
-        text: translations.join('\n\n'),
+        text: `🔠 Idioma original detectado: ${LANGUAGE_MAP[sourceLang]?.emoji || ''} ${LANGUAGE_MAP[sourceLang]?.name || sourceLang}`,
       },
-    },
-    {
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `🔠 Idioma original detectado: ${LANGUAGE_MAP[sourceLang]?.emoji || ''} ${LANGUAGE_MAP[sourceLang]?.name || sourceLang}`,
-        },
-      ],
-    },
+    ],
+  };
+
+  // Junta todos os blocos em uma única lista para envio
+  return [
+    headerBlock,
+    dividerBlock,
+    ...translationBlocks, // O operador '...' insere todos os blocos de tradução aqui
+    contextBlock
   ];
 }
+
 
 // =================================================================
 // LISTENER DE MENSAGENS DO SLACK
@@ -185,7 +193,6 @@ app.message(async ({ message, say }) => {
     });
   }
 });
-
 
 // =================================================================
 // INICIALIZAÇÃO DO SERVIDOR
