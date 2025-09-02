@@ -1,5 +1,6 @@
 require('dotenv').config();
-const { App } = require('@slack/bolt');
+// Passo 1: Importe o ExpressReceiver junto com o App
+const { App, ExpressReceiver } = require('@slack/bolt');
 const axios = require('axios');
 
 // =================================================================
@@ -31,10 +32,20 @@ const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
 // INICIALIZAÇÃO DO APLICATIVO SLACK
 // =================================================================
 
+// Passo 2: Crie e configure o receiver ANTES de inicializar o app
+const receiver = new ExpressReceiver({ signingSecret: process.env.SLACK_SIGNING_SECRET });
+
+// Adiciona a rota de health check diretamente no receiver
+receiver.app.get('/', (req, res) => {
+  res.status(200).send('Health check OK. Bot is running!');
+});
+
+// Passo 3: Inicialize o App, passando o receiver já configurado
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
+  receiver: receiver, // A chave de assinatura já está no receiver
 });
+
 
 // =================================================================
 // FUNÇÕES AUXILIARES
@@ -66,7 +77,7 @@ async function translateText(text, targetLang) {
     DEEPL_API_URL,
     {
       auth_key: process.env.DEEPL_API_KEY,
-      text: [text], // O texto deve ser enviado como um array
+      text: [text],
       target_lang: targetLang,
     },
     { timeout: 5000 }
@@ -114,12 +125,10 @@ function formatSlackBlocks(translations, sourceLang) {
 
 app.message(async ({ message, say }) => {
   try {
-    // --- Validações iniciais ---
     if (message.thread_ts || !message.text) return;
     const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
     if (cleanText.length < MIN_MESSAGE_LENGTH) return;
 
-    // --- Passo 1: Otimização - Realiza uma chamada inicial para detectar o idioma ---
     let initialApiResponse;
     try {
       initialApiResponse = await axios.post(
@@ -127,7 +136,7 @@ app.message(async ({ message, say }) => {
         {
           auth_key: process.env.DEEPL_API_KEY,
           text: [cleanText],
-          target_lang: 'EN', // Alvo fixo apenas para a detecção
+          target_lang: 'EN',
         },
         { timeout: 5000 }
       );
@@ -139,20 +148,15 @@ app.message(async ({ message, say }) => {
       return;
     }
 
-    // --- Passo 2: Extrai o idioma de origem e define os idiomas-alvo REAIS ---
     const detectedLang = initialApiResponse.data.translations[0].detected_source_language;
     const sourceLang = detectedLang.startsWith('PT') ? 'PT-BR' : detectedLang;
-
-    // Pega a lista de traduções da configuração, EXCLUINDO o idioma original.
     const finalTargetLangs = (translationConfig[sourceLang] || []).filter(lang => lang !== sourceLang);
 
-    // Se não houver idiomas para os quais traduzir, encerra a execução.
     if (finalTargetLangs.length === 0) {
       console.log(`Mensagem no idioma '${sourceLang}', nenhuma tradução necessária conforme a configuração.`);
       return;
     }
 
-    // --- Passo 3: Realiza as traduções necessárias em paralelo ---
     const translations = await Promise.all(
       finalTargetLangs.map(async (lang) => {
         try {
@@ -167,7 +171,6 @@ app.message(async ({ message, say }) => {
       })
     );
     
-    // --- Passo 4: Envia a resposta formatada para o Slack ---
     await say({
       thread_ts: message.ts,
       blocks: formatSlackBlocks(translations, sourceLang),
@@ -183,12 +186,6 @@ app.message(async ({ message, say }) => {
   }
 });
 
-// =================================================================
-// HEALTH CHECK PARA O RENDER
-// =================================================================
-app.receiver.app.get('/', (req, res) => {
-  res.status(200).send('Health check OK. Bot is running!');
-});
 
 // =================================================================
 // INICIALIZAÇÃO DO SERVIDOR
