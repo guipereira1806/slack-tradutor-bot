@@ -31,15 +31,12 @@ const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
 // INICIALIZAÇÃO DO APLICATIVO SLACK
 // =================================================================
 
-// Cria um receiver customizado para adicionar a rota de health check
 const receiver = new ExpressReceiver({ signingSecret: process.env.SLACK_SIGNING_SECRET });
 
-// Adiciona a rota de health check diretamente no receiver
 receiver.app.get('/', (req, res) => {
   res.status(200).send('Health check OK. Bot is running!');
 });
 
-// Inicializa o App, passando o receiver já configurado
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver: receiver,
@@ -64,6 +61,39 @@ const handleDeeplError = (error) => {
   return `Erro de rede ou desconhecido: ${error.message}`;
 };
 
+/**
+ * NOVA FUNÇÃO: Centraliza a chamada à API DeepL, protegendo emojis da tradução.
+ */
+async function callDeeplAPI(text, targetLang) {
+  // Regex para encontrar a maioria dos emojis Unicode
+  const emojiRegex = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu;
+
+  // Envelopa os emojis com a tag <notranslate> para que o DeepL os ignore
+  const textWithProtectedEmojis = text.replace(emojiRegex, '<notranslate>$&</notranslate>');
+
+  const response = await axios.post(
+    DEEPL_API_URL,
+    {
+      auth_key: process.env.DEEPL_API_KEY,
+      text: [textWithProtectedEmojis],
+      target_lang: targetLang,
+      tag_handling: 'xml', // Habilita o manuseio de tags XML
+    },
+    { timeout: 5000 }
+  );
+
+  const translationResult = response.data.translations[0];
+
+  // Remove as tags <notranslate> do texto final antes de retornar
+  const cleanedText = translationResult.text.replace(/<\/?notranslate>/g, '');
+
+  return {
+    translatedText: cleanedText,
+    detectedSourceLanguage: translationResult.detected_source_language,
+  };
+}
+
+
 async function translateText(text, targetLang) {
   const cacheKey = `${text}-${targetLang}`;
   const cachedResult = translationCache.get(cacheKey);
@@ -71,42 +101,24 @@ async function translateText(text, targetLang) {
   if (cachedResult && Date.now() - cachedResult.timestamp < TTL_CACHE_MS) {
     return cachedResult.translation;
   }
-  const response = await axios.post(
-    DEEPL_API_URL,
-    {
-      auth_key: process.env.DEEPL_API_KEY,
-      text: [text],
-      target_lang: targetLang,
-    },
-    { timeout: 5000 }
-  );
-  const translatedText = response.data.translations[0].text;
+  
+  // Usa a nova função centralizada para fazer a chamada
+  const { translatedText } = await callDeeplAPI(text, targetLang);
+
   translationCache.set(cacheKey, { translation: translatedText, timestamp: Date.now() });
   return translatedText;
 }
 
-// ESTA É A VERSÃO CORRIGIDA PARA MENSAGENS LONGAS
 function formatSlackBlocks(translations, sourceLang) {
   const headerBlock = {
     type: 'header',
-    text: {
-      type: 'plain_text',
-      text: '🌍 Traduções Automáticas',
-      emoji: true,
-    },
+    text: { type: 'plain_text', text: '🌍 Traduções Automáticas', emoji: true },
   };
-
   const dividerBlock = { type: 'divider' };
-
-  // Cria dinamicamente um bloco de 'section' para CADA tradução
   const translationBlocks = translations.map(translationText => ({
     type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: translationText,
-    },
+    text: { type: 'mrkdwn', text: translationText },
   }));
-
   const contextBlock = {
     type: 'context',
     elements: [
@@ -116,16 +128,8 @@ function formatSlackBlocks(translations, sourceLang) {
       },
     ],
   };
-
-  // Junta todos os blocos em uma única lista para envio
-  return [
-    headerBlock,
-    dividerBlock,
-    ...translationBlocks, // O operador '...' insere todos os blocos de tradução aqui
-    contextBlock
-  ];
+  return [headerBlock, dividerBlock, ...translationBlocks, contextBlock];
 }
-
 
 // =================================================================
 // LISTENER DE MENSAGENS DO SLACK
@@ -137,17 +141,10 @@ app.message(async ({ message, say }) => {
     const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
     if (cleanText.length < MIN_MESSAGE_LENGTH) return;
 
-    let initialApiResponse;
+    let initialApiResult;
     try {
-      initialApiResponse = await axios.post(
-        DEEPL_API_URL,
-        {
-          auth_key: process.env.DEEPL_API_KEY,
-          text: [cleanText],
-          target_lang: 'EN',
-        },
-        { timeout: 5000 }
-      );
+      // Usa a nova função centralizada para a chamada inicial também
+      initialApiResult = await callDeeplAPI(cleanText, 'EN');
     } catch (error) {
       await say({
         thread_ts: message.ts,
@@ -156,12 +153,12 @@ app.message(async ({ message, say }) => {
       return;
     }
 
-    const detectedLang = initialApiResponse.data.translations[0].detected_source_language;
+    const detectedLang = initialApiResult.detectedSourceLanguage;
     const sourceLang = detectedLang.startsWith('PT') ? 'PT-BR' : detectedLang;
     const finalTargetLangs = (translationConfig[sourceLang] || []).filter(lang => lang !== sourceLang);
 
     if (finalTargetLangs.length === 0) {
-      console.log(`Mensagem no idioma '${sourceLang}', nenhuma tradução necessária conforme a configuração.`);
+      console.log(`Mensagem no idioma '${sourceLang}', nenhuma tradução necessária.`);
       return;
     }
 
