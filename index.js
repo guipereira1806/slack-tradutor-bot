@@ -109,7 +109,7 @@ function formatSlackBlocks(translations, sourceLang) {
 }
 
 // =================================================================
-// LISTENER DE MENSAGENS DO SLACK (VERSÃO FINAL OTIMIZADA E MAIS LIMPA)
+// LISTENER DE MENSAGENS DO SLACK
 // =================================================================
 
 app.message(async ({ message, say }) => {
@@ -181,6 +181,13 @@ app.message(async ({ message, say }) => {
       text: `⚠️ Ocorreu um erro inesperado: ${error.message}`,
     });
   }
+});
+
+// =================================================================
+// HEALTH CHECK PARA O RENDER
+// =================================================================
+app.receiver.app.get('/', (req, res) => {
+  res.status(200).send('Health check OK. Bot is running!');
 });
 
 // =================================================================
