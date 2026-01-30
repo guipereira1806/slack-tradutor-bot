@@ -1,22 +1,33 @@
+/**
+ * Slack Translator Bot - Gemini Edition
+ * Author: Refactored by Google Staff Engineer Persona
+ * Stack: Node.js, Slack Bolt, Axios (No extra deps)
+ */
+
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 const axios = require('axios');
 
 // =================================================================
-// 1. CONFIGURAÇÕES GEMINI (MODELO STANDARD / PRO)
+// 1. CONFIGURATION & CONSTANTS (Single Source of Truth)
 // =================================================================
 
-const rawKey = process.env.GEMINI_API_KEY || '';
-const GEMINI_KEY = rawKey.trim().replace(/^["']|["']$/g, '');
-
-/**
- * SOLUÇÃO DEFINITIVA:
- * Mudamos para 'gemini-pro'.
- * Este modelo é universal e funciona em qualquer conta Google AI Studio.
- */
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_KEY}`;
-
-const MIN_MESSAGE_LENGTH = 5;
+const CONFIG = {
+  slack: {
+    signingSecret: process.env.SLACK_SIGNING_SECRET,
+    botToken: process.env.SLACK_BOT_TOKEN,
+    port: process.env.PORT || 3000,
+  },
+  gemini: {
+    apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
+    // Usando gemini-pro pois é a versão Stable (GA) disponível globalmente via REST
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent',
+    timeout: 15000, // 15s timeout (LLMs podem ser lentos)
+  },
+  app: {
+    minMessageLength: 5,
+  }
+};
 
 const LANGUAGE_MAP = {
   EN: { emoji: '🇺🇸', name: 'Inglês' },
@@ -25,116 +36,144 @@ const LANGUAGE_MAP = {
 };
 
 // =================================================================
-// 2. INICIALIZAÇÃO SLACK
+// 2. SERVICE LAYER: GEMINI API CLIENT
 // =================================================================
 
-const receiver = new ExpressReceiver({ 
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
-});
+class GeminiService {
+  constructor(config) {
+    this.apiKey = config.apiKey;
+    this.url = `${config.baseUrl}?key=${this.apiKey}`;
+    this.timeout = config.timeout;
+  }
 
-receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot Gemini Pro está ONLINE!'));
+  /**
+   * Sanitiza a resposta da IA para garantir um JSON válido.
+   * Remove blocos de código markdown (```json ... ```).
+   */
+  cleanJsonString(text) {
+    if (!text) return '{}';
+    // Remove marcadores de código Markdown e espaços extras
+    return text
+      .replace(/```json/gi, '')
+      .replace(/```/g, '')
+      .trim();
+  }
 
-const app = new App({
-  token: process.env.SLACK_BOT_TOKEN,
-  receiver: receiver,
-});
-
-// =================================================================
-// 3. FUNÇÃO DE TRADUÇÃO
-// =================================================================
-
-async function translateWithGemini(text) {
-  try {
-    const promptText = `
-      You are a translation bot.
-      Task:
-      1. Detect source language of: "${text}".
-      2. If source is Portuguese, translate to English (EN) and Spanish (ES).
-      3. If source is English, translate to Portuguese (PT-BR) and Spanish (ES).
-      4. If source is Spanish, translate to Portuguese (PT-BR) and English (EN).
+  async translate(text) {
+    const prompt = `
+      You are a high-precision translation engine.
+      Strictly follow these rules:
+      1. Detect the source language of the user text.
+      2. If source is PT/PT-BR -> Translate to EN and ES.
+      3. If source is EN -> Translate to PT-BR and ES.
+      4. If source is ES -> Translate to PT-BR and EN.
       
-      Output requirement:
-      Return ONLY valid JSON. No markdown formatting. No \`\`\` code blocks.
-      Format:
+      User text: "${text}"
+      
+      Output format (Strict JSON only, no polite phrases):
       {
-        "sourceLang": "CODE",
+        "sourceLang": "ISO_CODE",
         "translations": [
-          { "lang": "CODE", "text": "TRANSLATED_TEXT" },
-          { "lang": "CODE", "text": "TRANSLATED_TEXT" }
+          { "lang": "ISO_CODE", "text": "Translated content" }
         ]
       }
     `;
 
-    const response = await axios.post(GEMINI_URL, {
-      contents: [{
-        parts: [{ text: promptText }]
-      }]
-    }, { 
-      timeout: 10000,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    try {
+      const response = await axios.post(this.url, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1, // Baixa temperatura = Mais determinístico/Fiel
+        }
+      }, {
+        timeout: this.timeout,
+        headers: { 'Content-Type': 'application/json' }
+      });
 
-    if (!response.data || !response.data.candidates || response.data.candidates.length === 0) {
-        console.log("Resposta vazia do Gemini.");
+      const candidate = response.data?.candidates?.[0];
+
+      // Verificação de Segurança (Safety Settings trigger)
+      if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
+        console.warn(`[Gemini] Bloqueio de segurança: ${candidate.finishReason}`);
         return null;
-    }
+      }
 
-    const candidate = response.data.candidates[0];
-    
-    if (candidate.finishReason && candidate.finishReason !== "STOP") {
-        console.error("Bloqueio de segurança:", candidate.finishReason);
+      const rawText = candidate?.content?.parts?.[0]?.text;
+      if (!rawText) throw new Error('Resposta vazia da API.');
+
+      // Parsing Defensivo
+      try {
+        const cleanText = this.cleanJsonString(rawText);
+        return JSON.parse(cleanText);
+      } catch (parseError) {
+        console.error(`[Gemini] Erro de Parse JSON. Recebido: ${rawText}`);
         return null;
+      }
+
+    } catch (error) {
+      const errMsg = error.response?.data?.error?.message || error.message;
+      console.error(`[Gemini] Erro de API: ${errMsg}`);
+      return null;
     }
-
-    if (!candidate.content || !candidate.content.parts) {
-      throw new Error("Formato inválido recebido do Google");
-    }
-
-    let rawText = candidate.content.parts[0].text;
-    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-    return JSON.parse(rawText);
-
-  } catch (error) {
-    if (error.response) {
-        console.error("Erro API Gemini:", JSON.stringify(error.response.data, null, 2));
-    } else {
-        console.error("Erro Requisição:", error.message);
-    }
-    return null;
   }
 }
 
+// Instância Singleton do Serviço
+const aiService = new GeminiService(CONFIG.gemini);
+
 // =================================================================
-// 4. LISTENER DE MENSAGENS
+// 3. PRESENTATION LAYER: SLACK APP
+// =================================================================
+
+const receiver = new ExpressReceiver({
+  signingSecret: CONFIG.slack.signingSecret,
+});
+
+// Health Check robusto
+receiver.app.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'Slack Translator Bot', model: 'gemini-pro' });
+});
+
+const app = new App({
+  token: CONFIG.slack.botToken,
+  receiver: receiver,
+});
+
+// =================================================================
+// 4. CONTROLLER: MESSAGE HANDLER
 // =================================================================
 
 app.message(async ({ message, say }) => {
-  if (message.thread_ts) return; 
-  if (message.subtype === 'bot_message' || message.bot_id) return;
+  // 4.1. Guard Clauses (Validações iniciais rápidas)
+  if (message.thread_ts) return; // Ignora threads
+  if (message.subtype || message.bot_id) return; // Ignora eventos de sistema e outros bots
   if (!message.text) return;
 
+  // Limpeza básica do texto de entrada
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
-  if (cleanText.length < MIN_MESSAGE_LENGTH) return;
+  if (cleanText.length < CONFIG.app.minMessageLength) return;
 
   try {
-    const result = await translateWithGemini(cleanText);
+    // 4.2. Chamada ao Serviço
+    const result = await aiService.translate(cleanText);
 
+    // Se falhou silenciosamente (por erro ou segurança), paramos aqui.
     if (!result || !result.translations || result.translations.length === 0) return;
 
-    const sourceCode = result.sourceLang === 'PT' ? 'PT-BR' : result.sourceLang;
+    // 4.3. Lógica de Apresentação (UI)
+    const sourceCode = (result.sourceLang === 'PT' ? 'PT-BR' : result.sourceLang).toUpperCase();
     const sourceInfo = LANGUAGE_MAP[sourceCode] || { emoji: '🌐', name: sourceCode };
 
     const blocks = [
       {
         type: 'header',
-        text: { type: 'plain_text', text: '✨ Tradução', emoji: true }
+        text: { type: 'plain_text', text: '✨ Tradução Inteligente', emoji: true }
       },
       { type: 'divider' }
     ];
 
     result.translations.forEach(t => {
-      const langCode = t.lang === 'PT' ? 'PT-BR' : t.lang;
+      const langCode = (t.lang === 'PT' ? 'PT-BR' : t.lang).toUpperCase();
       const info = LANGUAGE_MAP[langCode] || { emoji: '🏳️', name: langCode };
       
       blocks.push({
@@ -147,27 +186,37 @@ app.message(async ({ message, say }) => {
       type: 'context',
       elements: [{
         type: 'mrkdwn', 
-        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _via Gemini Pro_`
+        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _Gemini Pro_`
       }]
     });
 
     await say({
       thread_ts: message.ts,
       blocks: blocks,
-      text: `Tradução disponível`
+      text: `Tradução disponível para: ${cleanText.substring(0, 20)}...`
     });
 
   } catch (error) {
-    console.error('Erro no handler:', error);
+    console.error('[App] Erro não tratado no handler:', error);
   }
 });
 
 // =================================================================
-// 5. INICIALIZAÇÃO
+// 5. BOOTSTRAP
 // =================================================================
 
 (async () => {
-  const port = process.env.PORT || 3000;
-  await app.start({ port, host: '0.0.0.0' });
-  console.log(`🚀 Bot Gemini PRO rodando na porta ${port}!`);
+  try {
+    await app.start({ port: CONFIG.slack.port, host: '0.0.0.0' });
+    console.log(`
+      🚀 SERVER STARTED
+      -----------------
+      PORT:   ${CONFIG.slack.port}
+      MODEL:  gemini-pro
+      MODE:   Production Ready
+    `);
+  } catch (error) {
+    console.error('❌ Falha fatal ao iniciar o servidor:', error);
+    process.exit(1);
+  }
 })();
