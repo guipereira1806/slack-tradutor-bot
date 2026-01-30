@@ -1,7 +1,6 @@
 /**
- * Slack Translator Bot - Gemini Edition
- * Author: Refactored by Google Staff Engineer Persona
- * Stack: Node.js, Slack Bolt, Axios (No extra deps)
+ * Slack Translator Bot - Gemini Edition (Com Auto-Diagnóstico)
+ * Status: Debugging & Production Mode
  */
 
 require('dotenv').config();
@@ -9,7 +8,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const axios = require('axios');
 
 // =================================================================
-// 1. CONFIGURATION & CONSTANTS (Single Source of Truth)
+// 1. CONFIGURAÇÃO (CENTRALIZADA)
 // =================================================================
 
 const CONFIG = {
@@ -20,9 +19,11 @@ const CONFIG = {
   },
   gemini: {
     apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
-    // Usando gemini-pro pois é a versão Stable (GA) disponível globalmente via REST
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent',
-    timeout: 15000, // 15s timeout (LLMs podem ser lentos)
+    // TENTATIVA: Vamos usar o flash-002 que é a versão numerada estável mais recente
+    // Se falhar, o diagnóstico nos logs nos dirá qual usar.
+    modelName: 'gemini-1.5-flash', 
+    apiVersion: 'v1beta',
+    timeout: 15000, 
   },
   app: {
     minMessageLength: 5,
@@ -36,41 +37,75 @@ const LANGUAGE_MAP = {
 };
 
 // =================================================================
-// 2. SERVICE LAYER: GEMINI API CLIENT
+// 2. DIAGNÓSTICO (O "PULO DO GATO")
+// =================================================================
+
+/**
+ * Esta função roda ao iniciar e lista para você no console
+ * EXATAMENTE quais modelos sua chave tem permissão para usar.
+ */
+async function runDiagnostic() {
+  console.log('\n🔍 --- INICIANDO DIAGNÓSTICO DO GEMINI ---');
+  const url = `https://generativelanguage.googleapis.com/${CONFIG.gemini.apiVersion}/models?key=${CONFIG.gemini.apiKey}`;
+  
+  try {
+    const response = await axios.get(url);
+    const models = response.data.models || [];
+    
+    console.log(`✅ Conexão com Google OK! Encontrei ${models.length} modelos disponíveis.`);
+    console.log('📋 Lista de modelos compatíveis com sua chave:');
+    
+    // Filtra apenas os que geram texto
+    const textModels = models
+      .filter(m => m.supportedGenerationMethods.includes('generateContent'))
+      .map(m => m.name.replace('models/', '')); // Remove o prefixo para facilitar leitura
+
+    console.log(textModels.join(', '));
+    console.log('-------------------------------------------\n');
+    
+    // Verifica se o modelo escolhido está na lista
+    if (!textModels.includes(CONFIG.gemini.modelName)) {
+      console.warn(`⚠️ AVISO CRÍTICO: O modelo configurado '${CONFIG.gemini.modelName}' NÃO está na lista acima.`);
+      console.warn(`👉 Solução: Copie um nome da lista acima e atualize a variável CONFIG.gemini.modelName no código.`);
+    } else {
+      console.log(`🎉 O modelo configurado '${CONFIG.gemini.modelName}' é válido e está disponível!`);
+    }
+
+  } catch (error) {
+    console.error('❌ FALHA NO DIAGNÓSTICO:', error.response ? error.response.data : error.message);
+    if (error.response && error.response.status === 404) {
+      console.error('💡 Dica: Verifique se sua chave API está correta e ativa no Google AI Studio.');
+    }
+  }
+}
+
+// =================================================================
+// 3. CAMADA DE SERVIÇO (GEMINI)
 // =================================================================
 
 class GeminiService {
   constructor(config) {
     this.apiKey = config.apiKey;
-    this.url = `${config.baseUrl}?key=${this.apiKey}`;
+    // Monta a URL dinamicamente
+    this.url = `https://generativelanguage.googleapis.com/${config.apiVersion}/models/${config.modelName}:generateContent?key=${this.apiKey}`;
     this.timeout = config.timeout;
   }
 
-  /**
-   * Sanitiza a resposta da IA para garantir um JSON válido.
-   * Remove blocos de código markdown (```json ... ```).
-   */
   cleanJsonString(text) {
     if (!text) return '{}';
-    // Remove marcadores de código Markdown e espaços extras
-    return text
-      .replace(/```json/gi, '')
-      .replace(/```/g, '')
-      .trim();
+    return text.replace(/```json/gi, '').replace(/```/g, '').trim();
   }
 
   async translate(text) {
     const prompt = `
-      You are a high-precision translation engine.
+      You are a translation engine.
       Strictly follow these rules:
-      1. Detect the source language of the user text.
+      1. Detect source language of: "${text}".
       2. If source is PT/PT-BR -> Translate to EN and ES.
       3. If source is EN -> Translate to PT-BR and ES.
       4. If source is ES -> Translate to PT-BR and EN.
       
-      User text: "${text}"
-      
-      Output format (Strict JSON only, no polite phrases):
+      Output format (Strict JSON only):
       {
         "sourceLang": "ISO_CODE",
         "translations": [
@@ -81,57 +116,50 @@ class GeminiService {
 
     try {
       const response = await axios.post(this.url, {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.1, // Baixa temperatura = Mais determinístico/Fiel
-        }
+        contents: [{ parts: [{ text: prompt }] }]
       }, {
         timeout: this.timeout,
         headers: { 'Content-Type': 'application/json' }
       });
 
       const candidate = response.data?.candidates?.[0];
-
-      // Verificação de Segurança (Safety Settings trigger)
+      
       if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
         console.warn(`[Gemini] Bloqueio de segurança: ${candidate.finishReason}`);
         return null;
       }
 
       const rawText = candidate?.content?.parts?.[0]?.text;
-      if (!rawText) throw new Error('Resposta vazia da API.');
+      if (!rawText) throw new Error('Resposta vazia da IA.');
 
-      // Parsing Defensivo
       try {
         const cleanText = this.cleanJsonString(rawText);
         return JSON.parse(cleanText);
       } catch (parseError) {
-        console.error(`[Gemini] Erro de Parse JSON. Recebido: ${rawText}`);
+        console.error(`[Gemini] Erro de Parse JSON. Texto recebido: ${rawText}`);
         return null;
       }
 
     } catch (error) {
       const errMsg = error.response?.data?.error?.message || error.message;
-      console.error(`[Gemini] Erro de API: ${errMsg}`);
+      console.error(`[Gemini] Erro de API (${error.response?.status || 'Unknown'}): ${errMsg}`);
       return null;
     }
   }
 }
 
-// Instância Singleton do Serviço
 const aiService = new GeminiService(CONFIG.gemini);
 
 // =================================================================
-// 3. PRESENTATION LAYER: SLACK APP
+// 4. APP SLACK
 // =================================================================
 
 const receiver = new ExpressReceiver({
   signingSecret: CONFIG.slack.signingSecret,
 });
 
-// Health Check robusto
 receiver.app.get('/', (req, res) => {
-  res.status(200).json({ status: 'ok', service: 'Slack Translator Bot', model: 'gemini-pro' });
+  res.status(200).send('🤖 Bot está ONLINE. Verifique os logs para o Diagnóstico do Gemini.');
 });
 
 const app = new App({
@@ -139,35 +167,26 @@ const app = new App({
   receiver: receiver,
 });
 
-// =================================================================
-// 4. CONTROLLER: MESSAGE HANDLER
-// =================================================================
-
 app.message(async ({ message, say }) => {
-  // 4.1. Guard Clauses (Validações iniciais rápidas)
-  if (message.thread_ts) return; // Ignora threads
-  if (message.subtype || message.bot_id) return; // Ignora eventos de sistema e outros bots
+  if (message.thread_ts) return; 
+  if (message.subtype || message.bot_id) return;
   if (!message.text) return;
 
-  // Limpeza básica do texto de entrada
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
   if (cleanText.length < CONFIG.app.minMessageLength) return;
 
   try {
-    // 4.2. Chamada ao Serviço
     const result = await aiService.translate(cleanText);
 
-    // Se falhou silenciosamente (por erro ou segurança), paramos aqui.
     if (!result || !result.translations || result.translations.length === 0) return;
 
-    // 4.3. Lógica de Apresentação (UI)
     const sourceCode = (result.sourceLang === 'PT' ? 'PT-BR' : result.sourceLang).toUpperCase();
     const sourceInfo = LANGUAGE_MAP[sourceCode] || { emoji: '🌐', name: sourceCode };
 
     const blocks = [
       {
         type: 'header',
-        text: { type: 'plain_text', text: '✨ Tradução Inteligente', emoji: true }
+        text: { type: 'plain_text', text: '✨ Tradução', emoji: true }
       },
       { type: 'divider' }
     ];
@@ -186,37 +205,34 @@ app.message(async ({ message, say }) => {
       type: 'context',
       elements: [{
         type: 'mrkdwn', 
-        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _Gemini Pro_`
+        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name}`
       }]
     });
 
     await say({
       thread_ts: message.ts,
       blocks: blocks,
-      text: `Tradução disponível para: ${cleanText.substring(0, 20)}...`
+      text: `Tradução disponível`
     });
 
   } catch (error) {
-    console.error('[App] Erro não tratado no handler:', error);
+    console.error('[App] Erro no handler:', error);
   }
 });
 
 // =================================================================
-// 5. BOOTSTRAP
+// 5. INICIALIZAÇÃO E EXECUÇÃO DO DIAGNÓSTICO
 // =================================================================
 
 (async () => {
   try {
     await app.start({ port: CONFIG.slack.port, host: '0.0.0.0' });
-    console.log(`
-      🚀 SERVER STARTED
-      -----------------
-      PORT:   ${CONFIG.slack.port}
-      MODEL:  gemini-pro
-      MODE:   Production Ready
-    `);
+    console.log(`🚀 Servidor rodando na porta ${CONFIG.slack.port}`);
+    
+    // RODA O DIAGNÓSTICO ASSIM QUE O SERVIDOR SOBE
+    await runDiagnostic();
+
   } catch (error) {
-    console.error('❌ Falha fatal ao iniciar o servidor:', error);
-    process.exit(1);
+    console.error('❌ Erro fatal:', error);
   }
 })();
