@@ -1,5 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Modelo Atualizado: 2.0 Flash)
+ * Slack Translator Bot - Gemini Edition (Final Fix: Flash Latest)
  */
 
 require('dotenv').config();
@@ -19,8 +19,9 @@ const CONFIG = {
   gemini: {
     apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
     
-    // ATUALIZADO: Usando o Gemini 2.0 Flash (Confirmado na sua lista)
-    modelName: 'gemini-2.0-flash', 
+    // CORREÇÃO FINAL: Usando 'gemini-flash-latest'
+    // Este modelo apareceu na sua lista de diagnóstico e tem cota gratuita.
+    modelName: 'gemini-flash-latest', 
     
     apiVersion: 'v1beta',
     timeout: 15000, 
@@ -37,19 +38,20 @@ const LANGUAGE_MAP = {
 };
 
 // =================================================================
-// 2. CAMADA DE SERVIÇO (GEMINI)
+// 2. CAMADA DE SERVIÇO (GEMINI VIA AXIOS)
 // =================================================================
 
 class GeminiService {
   constructor(config) {
     this.apiKey = config.apiKey;
-    // Monta a URL dinamicamente com o modelo 2.0
+    // Monta a URL dinamicamente baseada no modelo escolhido
     this.url = `https://generativelanguage.googleapis.com/${config.apiVersion}/models/${config.modelName}:generateContent?key=${this.apiKey}`;
     this.timeout = config.timeout;
   }
 
   cleanJsonString(text) {
     if (!text) return '{}';
+    // Remove formatação Markdown que a IA as vezes coloca
     return text.replace(/```json/gi, '').replace(/```/g, '').trim();
   }
 
@@ -99,7 +101,10 @@ class GeminiService {
 
     } catch (error) {
       const errMsg = error.response?.data?.error?.message || error.message;
-      console.error(`[Gemini] Erro de API (${error.response?.status || 'Unknown'}): ${errMsg}`);
+      const status = error.response?.status || 'Unknown';
+      
+      // Log detalhado para debug se necessário
+      console.error(`[Gemini] Erro de API (${status}): ${errMsg}`);
       return null;
     }
   }
@@ -116,7 +121,7 @@ const receiver = new ExpressReceiver({
 });
 
 receiver.app.get('/', (req, res) => {
-  res.status(200).send('🤖 Bot Gemini 2.0 Flash está ONLINE!');
+  res.status(200).send(`🤖 Bot Online | Modelo: ${CONFIG.gemini.modelName}`);
 });
 
 const app = new App({
@@ -125,6 +130,7 @@ const app = new App({
 });
 
 app.message(async ({ message, say }) => {
+  // Filtros de segurança e spam
   if (message.thread_ts) return; 
   if (message.subtype || message.bot_id) return;
   if (!message.text) return;
@@ -162,7 +168,7 @@ app.message(async ({ message, say }) => {
       type: 'context',
       elements: [{
         type: 'mrkdwn', 
-        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _via Gemini 2.0_`
+        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name}`
       }]
     });
 
@@ -184,7 +190,8 @@ app.message(async ({ message, say }) => {
 (async () => {
   try {
     await app.start({ port: CONFIG.slack.port, host: '0.0.0.0' });
-    console.log(`🚀 Servidor rodando na porta ${CONFIG.slack.port} usando Gemini 2.0 Flash`);
+    console.log(`🚀 Servidor rodando na porta ${CONFIG.slack.port}`);
+    console.log(`🧠 Modelo Gemini ativo: ${CONFIG.gemini.modelName}`);
   } catch (error) {
     console.error('❌ Erro fatal:', error);
   }
