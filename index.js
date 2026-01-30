@@ -1,19 +1,29 @@
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 const axios = require('axios');
-const crypto = require('crypto'); // Nativo do Node.js, usado para otimizar o cache
+const crypto = require('crypto'); // Nativo do Node.js
 
 // =================================================================
-// 1. CONFIGURAÇÕES INTELIGENTES
+// 1. CONFIGURAÇÕES INTELIGENTES E LIMPEZA DE CHAVE
 // =================================================================
 
-// Detecta automaticamente se a chave é FREE (:fx) ou PRO
-const isFreeKey = process.env.DEEPL_API_KEY ? process.env.DEEPL_API_KEY.endsWith(':fx') : false;
+// 1. Pega a chave bruta e LIMPA sujeiras (espaços, aspas, quebras de linha)
+const rawKey = process.env.DEEPL_API_KEY || '';
+const DEEPL_KEY = rawKey.trim().replace(/^["']|["']$/g, '');
+
+// 2. Detecta automaticamente se a chave é FREE (:fx) ou PRO
+const isFreeKey = DEEPL_KEY.endsWith(':fx');
+
+// 3. Define a URL correta
 const DEEPL_API_URL = isFreeKey 
   ? 'https://api-free.deepl.com/v2/translate' 
   : 'https://api.deepl.com/v2/translate';
 
-console.log(`🔧 Modo DeepL: ${isFreeKey ? 'FREE' : 'PRO'} | URL: ${DEEPL_API_URL}`);
+// Log de segurança para Debug (mostra só o final da chave para confirmar que carregou)
+console.log(`🔧 Configuração DeepL:`);
+console.log(`   - Modo: ${isFreeKey ? 'FREE (Conta Gratuita)' : 'PRO (Conta Paga)'}`);
+console.log(`   - URL: ${DEEPL_API_URL}`);
+console.log(`   - Chave carregada (final): ...${DEEPL_KEY.slice(-5)}`);
 
 const MIN_MESSAGE_LENGTH = 5;
 const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
@@ -22,8 +32,8 @@ const TTL_CACHE_MS = 15 * 60 * 1000; // 15 minutos
 const LANGUAGE_MAP = {
   EN: { emoji: '🇺🇸', name: 'Inglês' },
   ES: { emoji: '🇪🇸', name: 'Espanhol' },
-  'PT-BR': { emoji: '🇧🇷', name: 'Português' }, // Padronizado para PT-BR
-  PT: { emoji: '🇵🇹', name: 'Português' }       // DeepL às vezes retorna apenas PT
+  'PT-BR': { emoji: '🇧🇷', name: 'Português' },
+  PT: { emoji: '🇵🇹', name: 'Português' }
 };
 
 // Quem traduz para quem
@@ -45,63 +55,54 @@ const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
-// Health Check para o Render não dormir/matar o app
-receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot está ONLINE!'));
+// Health check para manter o Render feliz
+receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot está ONLINE e pronto!'));
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver: receiver,
-  // removemos logLevel: debug para produção, mas pode reativar se precisar
 });
 
 // =================================================================
-// 3. CORE: SERVIÇO DE TRADUÇÃO (Isolado e Robusto)
+// 3. SERVIÇO DE TRADUÇÃO (CORE)
 // =================================================================
 
-/**
- * Gera um hash curto do texto para usar como chave de cache (economiza memória RAM)
- */
+// Gera chave de hash curta para economizar memória RAM
 function generateCacheKey(text, targetLang) {
   return crypto.createHash('md5').update(`${text}-${targetLang}`).digest('hex');
 }
 
-/**
- * Lida com erros da API do DeepL de forma centralizada
- */
+// Tratamento de erros amigável
 const getDeepLErrorMessage = (error) => {
   if (axios.isAxiosError(error) && error.response) {
     const status = error.response.status;
     if (status === 456) return '⚠️ Cota do DeepL excedida.';
-    if (status === 429) return '⚠️ Muitos pedidos (Rate Limit). Tente já.';
-    if (status === 403) return '⚠️ Chave de API inválida (Verifique Free/Pro).';
+    if (status === 429) return '⚠️ Muitos pedidos (Rate Limit). Aguarde um pouco.';
+    if (status === 403) return '⚠️ Erro de Autenticação (Chave inválida).';
     return `Erro DeepL (${status})`;
   }
   return 'Erro de conexão.';
 };
 
-/**
- * Realiza a chamada à API com proteção de emojis e tratamento de erros
- */
 async function callDeeplAPI(text, targetLang) {
   try {
-    // Estratégia de Placeholders para Emojis
+    // Tratamento de Emojis (substitui por placeholders <e0>)
     const emojiRegex = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu;
     const foundEmojis = text.match(emojiRegex) || [];
     
     let textToSend = text;
-    
     if (foundEmojis.length > 0) {
       let i = 0;
-      textToSend = text.replace(emojiRegex, () => `<e${i++}>`); // Placeholder curto XML-like
+      textToSend = text.replace(emojiRegex, () => `<e${i++}>`);
     }
 
-    // Chamada Axios
+    // CHAMADA AXIOS (Usando a chave limpa DEEPL_KEY)
     const response = await axios.post(DEEPL_API_URL, {
-      auth_key: process.env.DEEPL_API_KEY,
+      auth_key: DEEPL_KEY, // <--- Aqui usamos a chave sanitizada
       text: [textToSend],
       target_lang: targetLang,
-      preserve_formatting: "1", // Tenta manter estrutura original
-    }, { timeout: 8000 }); // Timeout aumentado para evitar falhas em textos longos
+      preserve_formatting: "1",
+    }, { timeout: 10000 }); // Timeout seguro de 10s
 
     let translatedText = response.data.translations[0].text;
     const detectedSource = response.data.translations[0].detected_source_language;
@@ -111,7 +112,7 @@ async function callDeeplAPI(text, targetLang) {
       foundEmojis.forEach((emoji, index) => {
         const placeholder = `<e${index}>`;
         translatedText = translatedText.replace(placeholder, emoji);
-        // Fallback: se o DeepL colocou espaço ou mudou o case da tag
+        // Fallback caso a API coloque espaços na tag
         translatedText = translatedText.replace(`< e ${index} >`, emoji).replace(`<E${index}>`, emoji);
       });
     }
@@ -119,13 +120,10 @@ async function callDeeplAPI(text, targetLang) {
     return { text: translatedText, lang: detectedSource };
 
   } catch (error) {
-    throw error; // Repassa o erro para ser tratado no loop principal
+    throw error;
   }
 }
 
-/**
- * Função Wrapper com Cache
- */
 async function getTranslation(text, targetLang) {
   const cacheKey = generateCacheKey(text, targetLang);
   const cached = translationCache.get(cacheKey);
@@ -136,10 +134,9 @@ async function getTranslation(text, targetLang) {
 
   const result = await callDeeplAPI(text, targetLang);
   
-  // Salva no cache
   translationCache.set(cacheKey, { translation: result.text, timestamp: Date.now() });
   
-  // Limpeza preventiva do cache se ficar muito grande (> 1000 itens)
+  // Limpa cache se ficar gigante
   if (translationCache.size > 1000) translationCache.clear();
 
   return result;
@@ -150,44 +147,40 @@ async function getTranslation(text, targetLang) {
 // =================================================================
 
 app.message(async ({ message, say }) => {
-  // 1. FILTRO DE SEGURANÇA: Ignora threads, bots e mensagens sem texto
-  if (message.thread_ts) return; 
-  if (message.subtype === 'bot_message' || message.bot_id) return; // IGNORA OUTROS BOTS
+  // --- FILTROS DE SEGURANÇA ---
+  if (message.thread_ts) return; // Ignora threads
+  if (message.subtype === 'bot_message' || message.bot_id) return; // IGNORA OUTROS BOTS (Evita Loop)
   if (!message.text) return;
 
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
   if (cleanText.length < MIN_MESSAGE_LENGTH) return;
 
   try {
-    // 2. DETECÇÃO INICIAL (Usa EN como dummy para descobrir o idioma original)
-    // Otimização: Se falhar aqui, nem tentamos o resto.
+    // 1. DETECÇÃO (Chamada leve para descobrir idioma)
     let initialResult;
     try {
       initialResult = await callDeeplAPI(cleanText, 'EN');
     } catch (err) {
-      console.error('Erro na detecção:', err.message);
-      return; // Falha silenciosa na detecção para não spamar o canal com erro
+      // Se der erro aqui (ex: 403), loga no console mas não quebra o bot
+      console.error(`[Erro Detecção] ${getDeepLErrorMessage(err)} | Detalhes: ${err.message}`);
+      return; 
     }
 
     const detectedLang = initialResult.lang;
     const sourceLang = detectedLang.startsWith('PT') ? 'PT-BR' : detectedLang;
     
-    // Filtra para quais idiomas vamos traduzir
+    // Define alvos
     const targets = (translationConfig[sourceLang] || (translationConfig['PT'] || [])).filter(t => t !== sourceLang);
 
-    if (!targets || targets.length === 0) {
-      return; // Nada a fazer
-    }
+    if (!targets || targets.length === 0) return;
 
-    // 3. TRADUÇÃO PARALELA
+    // 2. TRADUÇÃO PARALELA
     const translations = await Promise.all(
       targets.map(async (lang) => {
         try {
-          // Se o destino for EN e já traduzimos na detecção, usamos aquele resultado (Cache implícito)
           if (lang === 'EN' && initialResult.lang !== 'EN') {
              return { lang, text: initialResult.text, success: true };
           }
-
           const res = await getTranslation(cleanText, lang);
           return { lang, text: res.text, success: true };
         } catch (error) {
@@ -196,7 +189,7 @@ app.message(async ({ message, say }) => {
       })
     );
 
-    // 4. MONTAGEM DA RESPOSTA (BLOCK KIT)
+    // 3. RESPOSTA VISUAL
     const blocks = [
       {
         type: 'header',
@@ -207,8 +200,7 @@ app.message(async ({ message, say }) => {
 
     translations.forEach(t => {
       const info = LANGUAGE_MAP[t.lang] || { emoji: '🏳️', name: t.lang };
-      // Se deu erro, colocamos em itálico, se não, normal
-      const body = t.success ? t.text : `_${t.text}_`;
+      const body = t.success ? t.text : `_${t.text}_`; // Itálico se for erro
       
       blocks.push({
         type: 'section',
@@ -220,27 +212,27 @@ app.message(async ({ message, say }) => {
       type: 'context',
       elements: [{
         type: 'mrkdwn', 
-        text: `🔠 Original: ${LANGUAGE_MAP[sourceLang]?.emoji || ''} ${sourceLang} | _Bot by Render_`
+        text: `🔠 Original: ${LANGUAGE_MAP[sourceLang]?.emoji || ''} ${sourceLang}`
       }]
     });
 
     await say({
       thread_ts: message.ts,
       blocks: blocks,
-      text: `Tradução disponível` // Texto de fallback para notificações
+      text: `Tradução disponível`
     });
 
   } catch (error) {
-    console.error('Erro crítico no handler:', error);
+    console.error('Erro geral no handler:', error);
   }
 });
 
 // =================================================================
-// 5. START
+// 5. START SERVER
 // =================================================================
 
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start({ port, host: '0.0.0.0' });
-  console.log(`🚀 Tradutor v2.0 rodando na porta ${port}!`);
+  console.log(`🚀 Tradutor Iniciado na porta ${port}!`);
 })();
