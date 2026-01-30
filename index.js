@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
-const axios = require('axios'); // Vamos usar o axios que você já tem!
+const axios = require('axios');
 
 // =================================================================
 // 1. CONFIGURAÇÕES GEMINI (Via HTTP/Axios)
@@ -10,8 +10,12 @@ const axios = require('axios'); // Vamos usar o axios que você já tem!
 const rawKey = process.env.GEMINI_API_KEY || '';
 const GEMINI_KEY = rawKey.trim().replace(/^["']|["']$/g, '');
 
-// Endpoint direto da API REST do Google (Modelo Flash é rápido e free)
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+/**
+ * CORREÇÃO AQUI: 
+ * Mudamos para 'gemini-1.5-flash-latest' que é o alias mais seguro.
+ * Se ainda der erro, troque por 'gemini-pro'.
+ */
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
 
 const MIN_MESSAGE_LENGTH = 5;
 
@@ -30,7 +34,7 @@ const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
-receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot Gemini (Axios) está ONLINE!'));
+receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot Gemini v1.5 está ONLINE!'));
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -43,7 +47,6 @@ const app = new App({
 
 async function translateWithGemini(text) {
   try {
-    // Prompt que ensina o Gemini a ser um tradutor JSON
     const promptText = `
       You are a translation bot.
       Task:
@@ -74,10 +77,22 @@ async function translateWithGemini(text) {
       headers: { 'Content-Type': 'application/json' }
     });
 
-    // Extraindo a resposta do JSON complexo do Google
+    // Validando resposta
+    if (!response.data || !response.data.candidates || response.data.candidates.length === 0) {
+        console.log("Resposta bruta do Gemini:", JSON.stringify(response.data));
+        return null;
+    }
+
     const candidate = response.data.candidates[0];
-    if (!candidate || !candidate.content || !candidate.content.parts) {
-      throw new Error("Resposta vazia do Gemini");
+    
+    // Proteção contra bloqueios de segurança (Hate speech, harassment, etc)
+    if (candidate.finishReason && candidate.finishReason !== "STOP") {
+        console.error("Gemini bloqueou a resposta por segurança:", candidate.finishReason);
+        return null;
+    }
+
+    if (!candidate.content || !candidate.content.parts) {
+      throw new Error("Estrutura de resposta inesperada do Gemini");
     }
 
     let rawText = candidate.content.parts[0].text;
@@ -88,8 +103,13 @@ async function translateWithGemini(text) {
     return JSON.parse(rawText);
 
   } catch (error) {
-    console.error("Erro na chamada Gemini:", error.response ? error.response.data : error.message);
-    return null; // Retorna nulo para não quebrar o bot
+    // Log detalhado para te ajudar a debugar se der erro de novo
+    if (error.response) {
+        console.error("Erro API Gemini:", JSON.stringify(error.response.data, null, 2));
+    } else {
+        console.error("Erro Requisição:", error.message);
+    }
+    return null;
   }
 }
 
@@ -98,7 +118,6 @@ async function translateWithGemini(text) {
 // =================================================================
 
 app.message(async ({ message, say }) => {
-  // Filtros: Ignora threads, bots e mensagens curtas
   if (message.thread_ts) return; 
   if (message.subtype === 'bot_message' || message.bot_id) return;
   if (!message.text) return;
@@ -107,17 +126,13 @@ app.message(async ({ message, say }) => {
   if (cleanText.length < MIN_MESSAGE_LENGTH) return;
 
   try {
-    // Chama o Gemini
     const result = await translateWithGemini(cleanText);
 
-    // Se falhar ou não tiver traduções, não faz nada (silêncio)
     if (!result || !result.translations || result.translations.length === 0) return;
 
-    // Configura infos do idioma original
     const sourceCode = result.sourceLang === 'PT' ? 'PT-BR' : result.sourceLang;
     const sourceInfo = LANGUAGE_MAP[sourceCode] || { emoji: '🌐', name: sourceCode };
 
-    // Monta a resposta bonita
     const blocks = [
       {
         type: 'header',
@@ -162,5 +177,5 @@ app.message(async ({ message, say }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start({ port, host: '0.0.0.0' });
-  console.log(`🚀 Bot Gemini (Axios) rodando na porta ${port}!`);
+  console.log(`🚀 Bot Gemini (v1.5-flash-latest) rodando na porta ${port}!`);
 })();
