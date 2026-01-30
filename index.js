@@ -1,6 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Com Auto-Diagnóstico)
- * Status: Debugging & Production Mode
+ * Slack Translator Bot - Gemini Edition (Modelo Atualizado: 2.0 Flash)
  */
 
 require('dotenv').config();
@@ -19,9 +18,10 @@ const CONFIG = {
   },
   gemini: {
     apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
-    // TENTATIVA: Vamos usar o flash-002 que é a versão numerada estável mais recente
-    // Se falhar, o diagnóstico nos logs nos dirá qual usar.
-    modelName: 'gemini-1.5-flash', 
+    
+    // ATUALIZADO: Usando o Gemini 2.0 Flash (Confirmado na sua lista)
+    modelName: 'gemini-2.0-flash', 
+    
     apiVersion: 'v1beta',
     timeout: 15000, 
   },
@@ -37,56 +37,13 @@ const LANGUAGE_MAP = {
 };
 
 // =================================================================
-// 2. DIAGNÓSTICO (O "PULO DO GATO")
-// =================================================================
-
-/**
- * Esta função roda ao iniciar e lista para você no console
- * EXATAMENTE quais modelos sua chave tem permissão para usar.
- */
-async function runDiagnostic() {
-  console.log('\n🔍 --- INICIANDO DIAGNÓSTICO DO GEMINI ---');
-  const url = `https://generativelanguage.googleapis.com/${CONFIG.gemini.apiVersion}/models?key=${CONFIG.gemini.apiKey}`;
-  
-  try {
-    const response = await axios.get(url);
-    const models = response.data.models || [];
-    
-    console.log(`✅ Conexão com Google OK! Encontrei ${models.length} modelos disponíveis.`);
-    console.log('📋 Lista de modelos compatíveis com sua chave:');
-    
-    // Filtra apenas os que geram texto
-    const textModels = models
-      .filter(m => m.supportedGenerationMethods.includes('generateContent'))
-      .map(m => m.name.replace('models/', '')); // Remove o prefixo para facilitar leitura
-
-    console.log(textModels.join(', '));
-    console.log('-------------------------------------------\n');
-    
-    // Verifica se o modelo escolhido está na lista
-    if (!textModels.includes(CONFIG.gemini.modelName)) {
-      console.warn(`⚠️ AVISO CRÍTICO: O modelo configurado '${CONFIG.gemini.modelName}' NÃO está na lista acima.`);
-      console.warn(`👉 Solução: Copie um nome da lista acima e atualize a variável CONFIG.gemini.modelName no código.`);
-    } else {
-      console.log(`🎉 O modelo configurado '${CONFIG.gemini.modelName}' é válido e está disponível!`);
-    }
-
-  } catch (error) {
-    console.error('❌ FALHA NO DIAGNÓSTICO:', error.response ? error.response.data : error.message);
-    if (error.response && error.response.status === 404) {
-      console.error('💡 Dica: Verifique se sua chave API está correta e ativa no Google AI Studio.');
-    }
-  }
-}
-
-// =================================================================
-// 3. CAMADA DE SERVIÇO (GEMINI)
+// 2. CAMADA DE SERVIÇO (GEMINI)
 // =================================================================
 
 class GeminiService {
   constructor(config) {
     this.apiKey = config.apiKey;
-    // Monta a URL dinamicamente
+    // Monta a URL dinamicamente com o modelo 2.0
     this.url = `https://generativelanguage.googleapis.com/${config.apiVersion}/models/${config.modelName}:generateContent?key=${this.apiKey}`;
     this.timeout = config.timeout;
   }
@@ -151,7 +108,7 @@ class GeminiService {
 const aiService = new GeminiService(CONFIG.gemini);
 
 // =================================================================
-// 4. APP SLACK
+// 3. APP SLACK
 // =================================================================
 
 const receiver = new ExpressReceiver({
@@ -159,7 +116,7 @@ const receiver = new ExpressReceiver({
 });
 
 receiver.app.get('/', (req, res) => {
-  res.status(200).send('🤖 Bot está ONLINE. Verifique os logs para o Diagnóstico do Gemini.');
+  res.status(200).send('🤖 Bot Gemini 2.0 Flash está ONLINE!');
 });
 
 const app = new App({
@@ -205,7 +162,7 @@ app.message(async ({ message, say }) => {
       type: 'context',
       elements: [{
         type: 'mrkdwn', 
-        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name}`
+        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _via Gemini 2.0_`
       }]
     });
 
@@ -221,17 +178,13 @@ app.message(async ({ message, say }) => {
 });
 
 // =================================================================
-// 5. INICIALIZAÇÃO E EXECUÇÃO DO DIAGNÓSTICO
+// 4. INICIALIZAÇÃO
 // =================================================================
 
 (async () => {
   try {
     await app.start({ port: CONFIG.slack.port, host: '0.0.0.0' });
-    console.log(`🚀 Servidor rodando na porta ${CONFIG.slack.port}`);
-    
-    // RODA O DIAGNÓSTICO ASSIM QUE O SERVIDOR SOBE
-    await runDiagnostic();
-
+    console.log(`🚀 Servidor rodando na porta ${CONFIG.slack.port} usando Gemini 2.0 Flash`);
   } catch (error) {
     console.error('❌ Erro fatal:', error);
   }
