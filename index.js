@@ -1,5 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Fixed: 3x Messages & Headers Error)
+ * Slack Translator Bot - Gemini Edition (Reverted to gemini-flash-latest)
  */
 
 require('dotenv').config();
@@ -14,11 +14,14 @@ const CONFIG = {
   slack: {
     signingSecret: process.env.SLACK_SIGNING_SECRET,
     botToken: process.env.SLACK_BOT_TOKEN,
-    port: process.env.PORT || 10000, // Porta padrão para o Render
+    port: process.env.PORT || 10000, 
   },
   gemini: {
     apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
-    modelName: 'gemini-1.5-flash-latest', 
+    
+    // VOLTANDO PARA O MODELO DO SEU PRIMEIRO CÓDIGO
+    modelName: 'gemini-flash-latest', 
+    
     apiVersion: 'v1beta',
     timeout: 15000, 
   },
@@ -77,7 +80,8 @@ class GeminiService {
       return JSON.parse(rawText);
 
     } catch (error) {
-      console.error(`[Gemini Error]: ${error.response?.data?.error?.message || error.message}`);
+      const errMsg = error.response?.data?.error?.message || error.message;
+      console.error(`[Gemini Error]: ${errMsg}`);
       return null;
     }
   }
@@ -94,13 +98,13 @@ const receiver = new ExpressReceiver({
 });
 
 /**
- * FIX: Middleware de Retentativas (Nível Express)
- * Se o Slack reenviar o evento (retry), respondemos 200 OK imediatamente e paramos.
+ * FIX CRÍTICO: Middleware de Retentativas
+ * Impede que o Slack duplique mensagens (o problema das 3 respostas)
  */
 receiver.app.use((req, res, next) => {
   if (req.headers['x-slack-retry-num']) {
     console.log(`[Slack] Retry ignorado (tentativa #${req.headers['x-slack-retry-num']})`);
-    res.send('ok'); // O Slack para de reenviar se receber um OK
+    res.status(200).send('ok');
     return;
   }
   next();
@@ -112,11 +116,10 @@ const app = new App({
 });
 
 receiver.app.get('/', (req, res) => {
-  res.status(200).send(`🤖 Bot Online | Porta: ${CONFIG.slack.port}`);
+  res.status(200).send(`🤖 Bot Online | Modelo: ${CONFIG.gemini.modelName}`);
 });
 
 app.message(async ({ message, say }) => {
-  // Filtros básicos
   if (message.thread_ts || message.subtype || message.bot_id || !message.text) return;
 
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
