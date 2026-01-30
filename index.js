@@ -1,5 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Fixed: No Duplicates & JSON Mode)
+ * Slack Translator Bot - Gemini Edition (Fixed: 3x Messages & Headers Error)
  */
 
 require('dotenv').config();
@@ -14,7 +14,7 @@ const CONFIG = {
   slack: {
     signingSecret: process.env.SLACK_SIGNING_SECRET,
     botToken: process.env.SLACK_BOT_TOKEN,
-    port: process.env.PORT || 3000,
+    port: process.env.PORT || 10000, // Porta padrão para o Render
   },
   gemini: {
     apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
@@ -51,7 +51,7 @@ class GeminiService {
       - If source is EN -> Translate to PT-BR and ES.
       - If source is ES -> Translate to PT-BR and EN.
       
-      Output structure:
+      Output structure (JSON only):
       {
         "sourceLang": "ISO_CODE",
         "translations": [
@@ -63,7 +63,6 @@ class GeminiService {
     try {
       const response = await axios.post(this.url, {
         contents: [{ parts: [{ text: prompt }] }],
-        // Força a IA a responder apenas JSON puro
         generationConfig: {
           response_mime_type: "application/json"
         }
@@ -78,8 +77,7 @@ class GeminiService {
       return JSON.parse(rawText);
 
     } catch (error) {
-      const errMsg = error.response?.data?.error?.message || error.message;
-      console.error(`[Gemini Error]: ${errMsg}`);
+      console.error(`[Gemini Error]: ${error.response?.data?.error?.message || error.message}`);
       return null;
     }
   }
@@ -95,30 +93,30 @@ const receiver = new ExpressReceiver({
   signingSecret: CONFIG.slack.signingSecret,
 });
 
+/**
+ * FIX: Middleware de Retentativas (Nível Express)
+ * Se o Slack reenviar o evento (retry), respondemos 200 OK imediatamente e paramos.
+ */
+receiver.app.use((req, res, next) => {
+  if (req.headers['x-slack-retry-num']) {
+    console.log(`[Slack] Retry ignorado (tentativa #${req.headers['x-slack-retry-num']})`);
+    res.send('ok'); // O Slack para de reenviar se receber um OK
+    return;
+  }
+  next();
+});
+
 const app = new App({
   token: CONFIG.slack.botToken,
   receiver: receiver,
 });
 
-/**
- * FIX: Middleware para ignorar retentativas do Slack
- * O Slack tenta enviar a mesma mensagem 3 vezes se o bot não responder em 3s.
- * Esse bloco mata a execução se for uma retentativa (retry).
- */
-app.use(async ({ req, next }) => {
-  if (req.headers['x-slack-retry-num']) {
-    console.log(`[Slack] Ignorando retentativa: ${req.headers['x-slack-retry-num']}`);
-    return; 
-  }
-  await next();
-});
-
 receiver.app.get('/', (req, res) => {
-  res.status(200).send(`🤖 Bot Online | Modelo: ${CONFIG.gemini.modelName}`);
+  res.status(200).send(`🤖 Bot Online | Porta: ${CONFIG.slack.port}`);
 });
 
 app.message(async ({ message, say }) => {
-  // Filtros de segurança
+  // Filtros básicos
   if (message.thread_ts || message.subtype || message.bot_id || !message.text) return;
 
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
@@ -165,7 +163,7 @@ app.message(async ({ message, say }) => {
     });
 
   } catch (error) {
-    console.error('[App] Erro no processamento:', error);
+    console.error('[App] Erro:', error);
   }
 });
 
