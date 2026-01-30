@@ -3,18 +3,18 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const axios = require('axios');
 
 // =================================================================
-// 1. CONFIGURAÇÕES GEMINI (MODELO STANDARD)
+// 1. CONFIGURAÇÕES GEMINI (BR / FREE TIER)
 // =================================================================
 
 const rawKey = process.env.GEMINI_API_KEY || '';
 const GEMINI_KEY = rawKey.trim().replace(/^["']|["']$/g, '');
 
 /**
- * MUDANÇA CRÍTICA:
- * Usando 'gemini-pro'. Este é o modelo mais estável e compatível do Google.
- * Funciona em 100% das chaves AI Studio.
+ * CORREÇÃO PARA O BRASIL:
+ * Usamos o nome exato "gemini-1.5-flash".
+ * Removemos o sufixo "-latest" que causa o erro 404 na nossa região.
  */
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_KEY}`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
 
 const MIN_MESSAGE_LENGTH = 5;
 
@@ -32,7 +32,7 @@ const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
-receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot Gemini-Pro está ONLINE!'));
+receiver.app.get('/', (req, res) => res.status(200).send('🤖 Bot Gemini Flash (BR) está ONLINE!'));
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -75,36 +75,37 @@ async function translateWithGemini(text) {
       headers: { 'Content-Type': 'application/json' }
     });
 
+    // Se a resposta vier vazia ou quebrada
     if (!response.data || !response.data.candidates || response.data.candidates.length === 0) {
-        console.log("Resposta vazia do Gemini.");
+        console.log("Resposta vazia do Gemini. Verifique se a chave está ativa.");
         return null;
     }
 
     const candidate = response.data.candidates[0];
     
-    // Verificação de segurança
+    // Proteção contra bloqueios de segurança
     if (candidate.finishReason && candidate.finishReason !== "STOP") {
-        console.error("Bloqueio de segurança da IA:", candidate.finishReason);
+        console.error("Conteúdo bloqueado pela IA (Safety):", candidate.finishReason);
         return null;
     }
 
     if (!candidate.content || !candidate.content.parts) {
-      throw new Error("Formato inválido recebido do Google");
+      throw new Error("Estrutura inválida recebida do Google");
     }
 
     let rawText = candidate.content.parts[0].text;
 
-    // Limpeza rigorosa para garantir JSON válido
+    // Limpeza para garantir JSON válido (remove ```json e espaços)
     rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
 
     return JSON.parse(rawText);
 
   } catch (error) {
     if (error.response) {
-        // Se der erro, mostraremos o JSON exato do Google no log
-        console.error("Erro API Gemini Detalhado:", JSON.stringify(error.response.data, null, 2));
+        // Mostra o erro exato do Google nos logs
+        console.error("Erro API Google:", JSON.stringify(error.response.data, null, 2));
     } else {
-        console.error("Erro Requisição:", error.message);
+        console.error("Erro Interno:", error.message);
     }
     return null;
   }
@@ -152,7 +153,7 @@ app.message(async ({ message, say }) => {
       type: 'context',
       elements: [{
         type: 'mrkdwn', 
-        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _via Gemini Pro_`
+        text: `🔠 Original: ${sourceInfo.emoji} ${sourceInfo.name} | _via Gemini Flash_`
       }]
     });
 
@@ -174,5 +175,5 @@ app.message(async ({ message, say }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start({ port, host: '0.0.0.0' });
-  console.log(`🚀 Bot Gemini-Pro rodando na porta ${port}!`);
+  console.log(`🚀 Bot Gemini (Brasil/Free) rodando na porta ${port}!`);
 })();
