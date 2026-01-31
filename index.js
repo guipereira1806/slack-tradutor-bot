@@ -1,5 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Reverted to gemini-flash-latest)
+ * Slack Translator Bot - Gemini Edition (Final Shield: Deduplication)
  */
 
 require('dotenv').config();
@@ -18,10 +18,7 @@ const CONFIG = {
   },
   gemini: {
     apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
-    
-    // VOLTANDO PARA O MODELO DO SEU PRIMEIRO CÓDIGO
     modelName: 'gemini-flash-latest', 
-    
     apiVersion: 'v1beta',
     timeout: 15000, 
   },
@@ -37,7 +34,22 @@ const LANGUAGE_MAP = {
 };
 
 // =================================================================
-// 2. CAMADA DE SERVIÇO (GEMINI VIA AXIOS)
+// 2. SISTEMA ANTI-DUPLICIDADE (NOVO)
+// =================================================================
+// Armazena IDs de mensagens processadas recentemente para evitar repetição
+const processedIds = new Set();
+
+function isDuplicate(id) {
+  if (processedIds.has(id)) return true;
+  
+  processedIds.add(id);
+  // Limpa o ID da memória após 60 segundos (tempo suficiente para passar os retries do Slack)
+  setTimeout(() => processedIds.delete(id), 60000);
+  return false;
+}
+
+// =================================================================
+// 3. CAMADA DE SERVIÇO (GEMINI)
 // =================================================================
 
 class GeminiService {
@@ -90,21 +102,19 @@ class GeminiService {
 const aiService = new GeminiService(CONFIG.gemini);
 
 // =================================================================
-// 3. APP SLACK
+// 4. APP SLACK
 // =================================================================
 
 const receiver = new ExpressReceiver({
   signingSecret: CONFIG.slack.signingSecret,
 });
 
-/**
- * FIX CRÍTICO: Middleware de Retentativas
- * Impede que o Slack duplique mensagens (o problema das 3 respostas)
- */
+// Mantemos esse middleware como primeira linha de defesa
 receiver.app.use((req, res, next) => {
   if (req.headers['x-slack-retry-num']) {
-    console.log(`[Slack] Retry ignorado (tentativa #${req.headers['x-slack-retry-num']})`);
-    res.status(200).send('ok');
+    console.log(`[Slack] Retry de Header detectado: ${req.headers['x-slack-retry-num']}`);
+    // Se o cabeçalho chegar, respondemos OK para acalmar o Slack
+    res.status(200).send('ok'); 
     return;
   }
   next();
@@ -120,7 +130,18 @@ receiver.app.get('/', (req, res) => {
 });
 
 app.message(async ({ message, say }) => {
+  // Filtros Básicos
   if (message.thread_ts || message.subtype || message.bot_id || !message.text) return;
+  
+  // ===============================================================
+  // FIX FINAL: TRAVA DE DUPLICIDADE POR ID
+  // ===============================================================
+  // O "ts" (timestamp) da mensagem é único. Se o Slack reenviar a mensagem (retry),
+  // o "ts" será o mesmo. A gente checa se já processou esse "ts".
+  if (isDuplicate(message.ts)) {
+    console.log(`[Duplicidade] Mensagem ${message.ts} ignorada.`);
+    return; 
+  }
 
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
   if (cleanText.length < CONFIG.app.minMessageLength) return;
@@ -171,7 +192,7 @@ app.message(async ({ message, say }) => {
 });
 
 // =================================================================
-// 4. INICIALIZAÇÃO
+// 5. INICIALIZAÇÃO
 // =================================================================
 
 (async () => {
