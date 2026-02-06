@@ -1,5 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Final Shield: Deduplication)
+ * Slack Translator Bot - Gemini Edition (Final Shield: Deduplication + File Support)
  */
 
 require('dotenv').config();
@@ -34,16 +34,14 @@ const LANGUAGE_MAP = {
 };
 
 // =================================================================
-// 2. SISTEMA ANTI-DUPLICIDADE (NOVO)
+// 2. SISTEMA ANTI-DUPLICIDADE
 // =================================================================
-// Armazena IDs de mensagens processadas recentemente para evitar repetição
 const processedIds = new Set();
 
 function isDuplicate(id) {
   if (processedIds.has(id)) return true;
   
   processedIds.add(id);
-  // Limpa o ID da memória após 60 segundos (tempo suficiente para passar os retries do Slack)
   setTimeout(() => processedIds.delete(id), 60000);
   return false;
 }
@@ -109,11 +107,9 @@ const receiver = new ExpressReceiver({
   signingSecret: CONFIG.slack.signingSecret,
 });
 
-// Mantemos esse middleware como primeira linha de defesa
 receiver.app.use((req, res, next) => {
   if (req.headers['x-slack-retry-num']) {
     console.log(`[Slack] Retry de Header detectado: ${req.headers['x-slack-retry-num']}`);
-    // Se o cabeçalho chegar, respondemos OK para acalmar o Slack
     res.status(200).send('ok'); 
     return;
   }
@@ -130,20 +126,26 @@ receiver.app.get('/', (req, res) => {
 });
 
 app.message(async ({ message, say }) => {
-  // Filtros Básicos
-  if (message.thread_ts || message.subtype || message.bot_id || !message.text) return;
   
-  // ===============================================================
-  // FIX FINAL: TRAVA DE DUPLICIDADE POR ID
-  // ===============================================================
-  // O "ts" (timestamp) da mensagem é único. Se o Slack reenviar a mensagem (retry),
-  // o "ts" será o mesmo. A gente checa se já processou esse "ts".
+  // --- BLOCO DE FILTROS CORRIGIDO ---
+  
+  // Verifica se é uma mensagem duplicada (retry do Slack)
   if (isDuplicate(message.ts)) {
     console.log(`[Duplicidade] Mensagem ${message.ts} ignorada.`);
     return; 
   }
 
+  // Verifica se é um subtipo 'proibido' (ex: entrar no canal), mas permite 'file_share'
+  const isIgnoredSubtype = message.subtype && message.subtype !== 'file_share';
+
+  // Se for thread, subtipo ignorado, bot ou sem texto -> sai da função
+  if (message.thread_ts || isIgnoredSubtype || message.bot_id || !message.text) return;
+
+  // ----------------------------------
+
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
+  
+  // Só traduz se houver texto suficiente (mesmo com anexo, precisa de legenda)
   if (cleanText.length < CONFIG.app.minMessageLength) return;
 
   try {
