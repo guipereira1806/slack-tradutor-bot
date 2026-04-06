@@ -1,5 +1,5 @@
 /**
- * Slack Translator Bot - Gemini Edition (Final Shield: Deduplication + File Support)
+ * Slack Translator Bot - OpenAI Edition (Final Shield: Deduplication + File Support)
  */
 
 require('dotenv').config();
@@ -16,10 +16,10 @@ const CONFIG = {
     botToken: process.env.SLACK_BOT_TOKEN,
     port: process.env.PORT || 10000, 
   },
-  gemini: {
-    apiKey: (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
-    modelName: 'gemini-flash-latest', 
-    apiVersion: 'v1beta',
+  openai: {
+    apiKey: (process.env.OPENAI_API_KEY || '').trim().replace(/^["']|["']$/g, ''),
+    // Recomendo o gpt-4o-mini por ser muito rápido e barato para traduções
+    modelName: 'gpt-4o-mini', 
     timeout: 15000, 
   },
   app: {
@@ -47,13 +47,14 @@ function isDuplicate(id) {
 }
 
 // =================================================================
-// 3. CAMADA DE SERVIÇO (GEMINI)
+// 3. CAMADA DE SERVIÇO (OPENAI)
 // =================================================================
 
-class GeminiService {
+class OpenAIService {
   constructor(config) {
     this.apiKey = config.apiKey;
-    this.url = `https://generativelanguage.googleapis.com/${config.apiVersion}/models/${config.modelName}:generateContent?key=${this.apiKey}`;
+    this.url = 'https://api.openai.com/v1/chat/completions';
+    this.modelName = config.modelName;
     this.timeout = config.timeout;
   }
 
@@ -75,29 +76,41 @@ class GeminiService {
 
     try {
       const response = await axios.post(this.url, {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
+        model: this.modelName,
+        // Força a OpenAI a retornar um JSON válido
+        response_format: { type: "json_object" }, 
+        messages: [
+          { 
+            role: "system", 
+            content: "You are a helpful translation assistant. Always return valid JSON." 
+          },
+          { 
+            role: "user", 
+            content: prompt 
+          }
+        ]
       }, {
         timeout: this.timeout,
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}` // Autenticação via Bearer Token
+        }
       });
 
-      const rawText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const rawText = response.data?.choices?.[0]?.message?.content;
       if (!rawText) throw new Error('Resposta vazia da IA.');
 
       return JSON.parse(rawText);
 
     } catch (error) {
       const errMsg = error.response?.data?.error?.message || error.message;
-      console.error(`[Gemini Error]: ${errMsg}`);
+      console.error(`[OpenAI Error]: ${errMsg}`);
       return null;
     }
   }
 }
 
-const aiService = new GeminiService(CONFIG.gemini);
+const aiService = new OpenAIService(CONFIG.openai);
 
 // =================================================================
 // 4. APP SLACK
@@ -122,12 +135,10 @@ const app = new App({
 });
 
 receiver.app.get('/', (req, res) => {
-  res.status(200).send(`🤖 Bot Online | Modelo: ${CONFIG.gemini.modelName}`);
+  res.status(200).send(`🤖 Bot Online | Modelo: ${CONFIG.openai.modelName}`);
 });
 
 app.message(async ({ message, say }) => {
-  
-  // --- BLOCO DE FILTROS CORRIGIDO ---
   
   // Verifica se é uma mensagem duplicada (retry do Slack)
   if (isDuplicate(message.ts)) {
@@ -141,11 +152,9 @@ app.message(async ({ message, say }) => {
   // Se for thread, subtipo ignorado, bot ou sem texto -> sai da função
   if (message.thread_ts || isIgnoredSubtype || message.bot_id || !message.text) return;
 
-  // ----------------------------------
-
   const cleanText = message.text.replace(/<@[^>]+>|<#[^>]+>/g, '').trim();
   
-  // Só traduz se houver texto suficiente (mesmo com anexo, precisa de legenda)
+  // Só traduz se houver texto suficiente
   if (cleanText.length < CONFIG.app.minMessageLength) return;
 
   try {
